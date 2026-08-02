@@ -111,10 +111,10 @@ const isEarth = k => MAT[k] !== undefined;
 // ---------- movement tiers (horizontal) ----------
 // loudness base per footfall; stance affects how visible you are; height = collision box.
 const TIERS = [
-  { name:'PRONE',  spd:26,  base:0, int:0,    stance:0.35, h:9  },
-  { name:'CROUCH', spd:44,  base:1, int:0.55, stance:0.60, h:14 },
-  { name:'WALK',   spd:96,  base:6, int:0.42, stance:1.00, h:20 },
-  { name:'RUN',    spd:172, base:16,int:0.28, stance:1.15, h:20 },
+  { name:'PRONE',  spd:18,  base:0, int:0,    stance:0.35, h:9  },
+  { name:'CROUCH', spd:32,  base:1, int:0.60, stance:0.60, h:14 },
+  { name:'WALK',   spd:66,  base:6, int:0.46, stance:1.00, h:20 },
+  { name:'RUN',    spd:118, base:16,int:0.30, stance:1.15, h:20 },
 ];
 
 // surface loudness by what you're standing on
@@ -446,7 +446,8 @@ function resetRun(){
 function msg(t){ msgState={text:t,t:4}; }
 function floater(x,y,text,col){ floaters.push({x,y,text,col:col||PAL.chalk,t:2.2}); }
 
-const GRAV = 900, TERMV = 520, JUMP = 300;
+const GRAV = 900, TERMV = 520, JUMP = 260;
+const CLIMB_UP = 44, CLIMB_SIDE = 26;   // slow, deliberate climbing (independent of run speed)
 
 function pTile(){ return [clamp((player.x/T)|0,0,W-1), clamp((player.y/T)|0,0,H-1)]; }
 function pcell(){ const [x,y]=pTile(); return idx(x,y); }
@@ -494,31 +495,29 @@ function playerUpdate(dt){
 
   const c = pcell();
   const climbHere = climbable(c);
-  const climbBelow = climbable(belowCell());
 
   // ---- climbing mode ----
-  if(climbHere && (iy!==0 || player.climbing) && !busy){
-    player.climbing = true;
-    player.vy = iy * (tier.spd*0.7);
-    player.vx = ix * (tier.spd*0.5);
-    // leaving a ladder sideways onto a floor cancels climb
-    if(iy===0 && ix!==0 && player.onGround) player.climbing=false;
-  } else {
-    player.climbing = false;
-  }
+  // Detach by pressing straight left/right (step off onto a floor, or let go and fall).
+  if(player.climbing && ix!==0 && iy===0) player.climbing = false;
+  // Grab / stay on a ladder or rope only while pushing up or down.
+  if(climbHere && iy!==0 && !busy) player.climbing = true;
+  if(!climbHere || busy) player.climbing = false;
 
   if(player.climbing){
+    // slow, deliberate — same speed at any tier
+    player.vy = iy * CLIMB_UP;
+    player.vx = ix * CLIMB_SIDE;
     moveAxis(player.vx*dt, 0);
     moveAxis(0, player.vy*dt);
-    player.onGround=false;
+    player.onGround = groundProbe();
   } else {
-    // ---- horizontal ----
+    // ---- horizontal (gentle analog ramp) ----
     const target = ix*tier.spd;
-    const accel = (Math.abs(target)>Math.abs(player.vx))?1400:2000;
+    const accel = (Math.abs(target)>Math.abs(player.vx))?620:1200;
     player.vx += clamp(target-player.vx, -accel*dt, accel*dt);
     // ---- gravity ----
     player.vy += GRAV*dt; if(player.vy>TERMV) player.vy=TERMV;
-    // jump (up pressed while grounded) — a light hop, loud
+    // jump (up pressed while grounded, and not on a ladder) — a light hop, loud
     if(iy<0 && (player.onGround||player.coyote>0) && !climbHere){
       player.vy = -JUMP; player.onGround=false; player.coyote=0;
       if(tier.base>0){ emitSound((player.x/T)|0,(player.y/T)|0, 6); }

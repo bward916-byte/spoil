@@ -1,0 +1,1799 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>SPOIL</title>
+<style>
+  html, body {
+    margin: 0; padding: 0;
+    background: #0A0C11;
+    width: 100%; height: 100%;
+    height: 100dvh;
+    display: flex; align-items: center; justify-content: center;
+    overflow: hidden;
+    overscroll-behavior: none;
+    -webkit-user-select: none; user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  canvas {
+    image-rendering: pixelated;
+    max-width: 100vw;
+    max-height: 100vh;
+    max-height: 100dvh;
+    aspect-ratio: 960 / 640;
+    outline: none;
+    touch-action: none;
+  }
+  #rotate {
+    display: none;
+    position: fixed; inset: 0;
+    background: #0A0C11; color: #BFCBD9;
+    z-index: 10;
+    align-items: center; justify-content: center; text-align: center;
+    font: 16px/1.7 monospace;
+    padding: 0 24px;
+  }
+  #rotate b { color: #E9A23B; }
+  @media (orientation: portrait) and (pointer: coarse) {
+    #rotate { display: flex; }
+  }
+</style>
+</head>
+<body>
+<canvas id="g" width="960" height="640"></canvas>
+<div id="rotate"><div>&#8635;<br><b>S P O I L</b><br>turn your device sideways —<br>this job is worked in landscape</div></div>
+<script>
+// ============================================================
+// SPOIL — playable vertical slice (M0–M7)
+// Top-down stealth burglary. Canvas 2D, zero libraries.
+// ============================================================
+
+const PAL = {
+  void:  '#0A0C11',
+  draft: '#2E4260',
+  chalk: '#BFCBD9',
+  sodium:'#E9A23B',
+  verd:  '#4E9C86',
+  oxide: '#B8433A',
+};
+
+const W = 46, H = 34, T = 32, NC = W * H;
+const VIEW_W = 960, VIEW_H = 600, CANVAS_H = 640;
+const DIR4 = [[1,0],[-1,0],[0,1],[0,-1]];
+const TAU = Math.PI * 2;
+
+const idx = (x, y) => y * W + x;
+const inb = (x, y) => x >= 0 && y >= 0 && x < W && y < H;
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const dist2 = (ax, ay, bx, by) => { const dx = ax - bx, dy = ay - by; return dx*dx + dy*dy; };
+
+function hexRGB(h){ return [parseInt(h.slice(1,3),16), parseInt(h.slice(3,5),16), parseInt(h.slice(5,7),16)]; }
+function mix(h1, h2, t){
+  const a = hexRGB(h1), b = hexRGB(h2); t = clamp(t, 0, 1);
+  return `rgb(${(a[0]+(b[0]-a[0])*t)|0},${(a[1]+(b[1]-a[1])*t)|0},${(a[2]+(b[2]-a[2])*t)|0})`;
+}
+
+// ---------- surfaces ----------
+const SURF = {
+  '.': { walk:1, mult:1.0, name:'wood' },
+  ',': { walk:1, mult:1.2, name:'cobbles' },
+  '~': { walk:1, mult:0.4, name:'soil' },
+  'g': { walk:1, mult:1.9, name:'gravel' },
+  'c': { walk:1, mult:0.4, name:'carpet' },
+  't': { walk:1, mult:1.2, name:'tile' },
+  'H': { walk:1, mult:0.4, name:'well' },
+  'X': { walk:1, mult:1.2, name:'street' },
+  '#': { walk:0, mult:1.0, name:'wall' },
+  'W': { walk:0, mult:1.0, name:'window' },
+};
+
+// ---------- subsurface materials ----------
+const MAT = {
+  L: { t:2,  n:1, wt:1, name:'loam',          dig:1 },
+  C: { t:4,  n:1, wt:0, name:'clay',          dig:1 },
+  R: { t:6,  n:0, wt:0, name:'root mass',     dig:1 },
+  G: { t:5,  n:3, wt:2, name:'gravel fill',   dig:1 },
+  U: { t:6,  n:4, wt:2, name:'rubble',        dig:1 },
+  B: { t:11, n:6, wt:1, name:'brick footing', dig:1 },
+  K: { t:0,  n:0, wt:0, name:'bedrock',       dig:0 },
+  S: { t:0,  n:0, wt:0, name:'sewer void',    dig:0 },
+};
+
+const TIERS = [
+  { name:'PRONE',  spd:14,  base:0,  int:0,    stance:0.35 },
+  { name:'CROUCH', spd:24,  base:1,  int:1.4,  stance:0.60 },
+  { name:'CREEP',  spd:46,  base:3,  int:0.9,  stance:1.00 },
+  { name:'WALK',   spd:86,  base:7,  int:0.55, stance:1.00 },
+  { name:'RUN',    spd:152, base:16, int:0.32, stance:1.00 },
+];
+
+// ============================================================
+// Level state
+// ============================================================
+let surf, sub, doors, openWin, weakSet, holes, lamps, loot, guards, lightmap;
+let exploredS, exploredU, visNow;
+let player, mode, msgState, floaters, rings, shake, stats, camX, camY, gameT;
+let lock, action, glassCells;
+
+function rect(x0,y0,x1,y1,ch){ for(let y=y0;y<=y1;y++) for(let x=x0;x<=x1;x++) surf[idx(x,y)]=ch; }
+function outline(x0,y0,x1,y1,ch){
+  for(let x=x0;x<=x1;x++){ surf[idx(x,y0)]=ch; surf[idx(x,y1)]=ch; }
+  for(let y=y0;y<=y1;y++){ surf[idx(x0,y)]=ch; surf[idx(x1,y)]=ch; }
+}
+
+function genLevel(){
+  surf = new Array(NC).fill('~');
+  doors = new Map(); openWin = new Set(); weakSet = new Set(); holes = new Set();
+  glassCells = new Set();
+
+  outline(0,0,W-1,H-1,'#');
+  rect(1,1,44,3,',');                       // top street
+  for(let y=1;y<=3;y++){ surf[idx(43,y)]='X'; surf[idx(44,y)]='X'; }  // exit zone
+  rect(14,4,14,5,'g');                      // gravel path to front door
+
+  // building shell
+  outline(9,6,36,25,'#');
+  rect(10,7,35,24,'.');
+  rect(21,7,35,14,'t');                     // hall: tile floor
+  // spine walls
+  for(let y=6;y<=25;y++) surf[idx(20,y)]='#';
+  for(let x=9;x<=36;x++) surf[idx(x,15)]='#';
+  for(let y=15;y<=25;y++) surf[idx(28,y)]='#';
+  rect(29,16,35,24,'c');                    // strongroom carpet
+
+  // doors: [x, y, locked, pins, label]
+  const dspec = [
+    [14,6, 1,4,'front door'],
+    [14,15,0,0,'door'],
+    [24,15,0,0,'hall door'],
+    [20,10,0,0,'door'],
+    [20,20,0,0,'door'],
+    [28,20,1,6,'strongroom door'],
+  ];
+  for(const [x,y,lk,p,label] of dspec){
+    surf[idx(x,y)]='.';
+    doors.set(idx(x,y), { open:false, locked:!!lk, pins:p, label, x, y });
+  }
+
+  // windows
+  surf[idx(36,11)]='W';
+  surf[idx(9,20)]='W';
+
+  // well + weak floor in strongroom
+  surf[idx(5,29)]='H';
+  for(const [x,y] of [[31,22],[32,22],[31,23],[32,23]]) weakSet.add(idx(x,y));
+
+  // lamps: x,y in tiles, radius in tiles
+  lamps = [
+    { x:12.5, y:2.5, r:6.5 }, { x:28.5, y:2.5, r:6.5 }, { x:40.5, y:2.5, r:6.5 },
+    { x:28.5, y:10.5, r:5.5 }, { x:13.5, y:10.5, r:5 }, { x:24.5, y:20.5, r:4.5 },
+  ];
+
+  loot = [
+    { x:12, y:9,  val:120,  type:'coin', taken:false },
+    { x:26, y:8,  val:120,  type:'coin', taken:false },
+    { x:17, y:20, val:120,  type:'coin', taken:false },
+    { x:33, y:18, val:1500, type:'box',  taken:false },
+  ];
+
+  guards = [
+    mkGuard('street', [[11,2],[40,2]], true),
+    mkGuard('hall',   [[22,8],[34,8],[34,13],[22,13]], false),
+    mkGuard('cellar', [[22,17],[27,17],[27,23],[22,23]], false),
+  ];
+
+  // ---------- subsurface ----------
+  sub = new Array(NC);
+  for(let i=0;i<NC;i++) sub[i] = { mat:'L', dug:false, shored:false, probed:false };
+  for(let y=0;y<H;y++) for(let x=0;x<W;x++){
+    if(x<2||y<2||x>W-3||y>=31) sub[idx(x,y)].mat='K';
+  }
+  // rock blobs
+  for(const [x0,y0,x1,y1] of [[20,28,23,30],[36,26,39,28],[2,8,7,14],[40,18,43,24]])
+    for(let y=y0;y<=y1;y++) for(let x=x0;x<=x1;x++) if(inb(x,y)) sub[idx(x,y)].mat='K';
+  // gravel pocket + roots near well
+  for(let y=27;y<=30;y++) for(let x=11;x<=16;x++) if(sub[idx(x,y)].mat==='L') sub[idx(x,y)].mat='G';
+  for(let y=23;y<=25;y++) for(let x=3;x<=8;x++)  if(sub[idx(x,y)].mat==='L') sub[idx(x,y)].mat='R';
+  // footings under building perimeter, clay ring around them
+  const footing=[];
+  for(let x=9;x<=36;x++){ footing.push([x,6],[x,25]); }
+  for(let y=6;y<=25;y++){ footing.push([9,y],[36,y]); }
+  for(const [x,y] of footing) sub[idx(x,y)].mat='B';
+  for(const [x,y] of footing) for(const [dx,dy] of DIR4){
+    const nx=x+dx, ny=y+dy;
+    if(inb(nx,ny) && sub[idx(nx,ny)].mat==='L') sub[idx(nx,ny)].mat='C';
+  }
+  // sewer branch from the well
+  const sewer = [[5,29],[5,28],[5,27],[6,27],[7,27],[8,27],[9,27],[10,27],[11,27],[12,27]];
+  for(const [x,y] of sewer) sub[idx(x,y)].mat='S';
+
+  bakeLight();
+}
+
+function mkGuard(id, wps, lantern){
+  return {
+    id, wps, wp:0, lantern,
+    x:wps[0][0]*T+16, y:wps[0][1]*T+16,
+    face:0, susp:0, floor:0, aware:1,
+    state:'patrol', path:null, pi:0,
+    lastKnown:null, lastSeen:-99, sweepT:0, holdT:0, said:'',
+    shouted:false, repathT:0, arriveNoSeeT:0,
+  };
+}
+
+function bakeLight(){
+  lightmap = new Float32Array(NC);
+  for(const lm of lamps){
+    const r = lm.r;
+    for(let y=Math.max(0,(lm.y-r)|0); y<=Math.min(H-1,(lm.y+r)|0); y++)
+      for(let x=Math.max(0,(lm.x-r)|0); x<=Math.min(W-1,(lm.x+r)|0); x++){
+        const d = Math.hypot(x+0.5-lm.x, y+0.5-lm.y);
+        if(d>r) continue;
+        if(!losTiles(lm.x, lm.y, x+0.5, y+0.5)) continue;
+        const v = 1 - d/r;
+        const i = idx(x,y);
+        if(v > lightmap[i]) lightmap[i] = v;
+      }
+  }
+}
+
+// ============================================================
+// Geometry / vision
+// ============================================================
+function opaqueS(i){
+  const ch = surf[i];
+  if(ch==='#') return true;
+  const d = doors.get(i);
+  if(d && !d.open) return true;
+  return false;                    // windows are glass: see through
+}
+function opaqueU(i){ const c = sub[i]; return !(c.dug || c.mat==='S'); }
+function opaque(layer, i){ return layer===0 ? opaqueS(i) : opaqueU(i); }
+
+function walkS(i){
+  const ch = surf[i];
+  if(ch==='#') return false;
+  if(ch==='W') return openWin.has(i);
+  const d = doors.get(i);
+  if(d && !d.open) return false;
+  return true;
+}
+function walkU(i){ const c = sub[i]; return c.dug || c.mat==='S'; }
+function walk(layer, i){ return layer===0 ? walkS(i) : walkU(i); }
+
+// tile-space LOS (used for light bake + guard sight)
+function losTiles(x0,y0,x1,y1, layer=0){
+  const d = Math.hypot(x1-x0, y1-y0);
+  const steps = Math.max(1, Math.ceil(d/0.33));
+  for(let s=1; s<steps; s++){
+    const t = s/steps;
+    const x = (x0+(x1-x0)*t)|0, y = (y0+(y1-y0)*t)|0;
+    if(!inb(x,y)) return false;
+    if(opaque(layer, idx(x,y))) return false;
+  }
+  return true;
+}
+
+function computeFOV(px, py, layer, radius){
+  const vis = new Set();
+  vis.add(idx(px|0, py|0));
+  for(let a=0; a<360; a+=2){
+    const dx = Math.cos(a*Math.PI/180)*0.45, dy = Math.sin(a*Math.PI/180)*0.45;
+    let fx=px, fy=py;
+    for(let s=0; s<radius/0.45; s++){
+      fx+=dx; fy+=dy;
+      const tx=fx|0, ty=fy|0;
+      if(!inb(tx,ty)) break;
+      const i = idx(tx,ty);
+      vis.add(i);
+      if(opaque(layer,i)) break;
+    }
+  }
+  return vis;
+}
+
+function lightAtPx(px, py){
+  const tx = clamp((px/T)|0, 0, W-1), ty = clamp((py/T)|0, 0, H-1);
+  let v = lightmap[idx(tx,ty)];
+  for(const g of guards){
+    if(!g.lantern) continue;
+    const d = Math.hypot(px-g.x, py-g.y)/T;
+    if(d < 4.5 && losTiles(g.x/T, g.y/T, px/T, py/T)) v = Math.max(v, (1-d/4.5)*0.95);
+  }
+  return clamp(v, 0.04, 1);
+}
+
+function playerV(){
+  if(player.layer!==0) return 0;
+  const tier = TIERS[player.tier];
+  const speed = Math.hypot(player.vx, player.vy);
+  const motion = speed<4 ? 0.55 : player.tier<=2 ? 0.8 : player.tier===3 ? 1.0 : 1.35;
+  return clamp(lightAtPx(player.x, player.y) * tier.stance * motion, 0, 1.3);
+}
+
+// ============================================================
+// Sound propagation (flood with edge costs, both layers)
+// ============================================================
+function soundStepCost(layer, ni){
+  if(layer===0){
+    const ch = surf[ni];
+    if(ch==='#') return -1;
+    if(ch==='W') return openWin.has(ni) ? 3 : 13;
+    const d = doors.get(ni);
+    if(d) return d.open ? 1 : 11;
+    return 0;
+  } else {
+    const c = sub[ni];
+    if(c.mat==='K') return -1;
+    if(c.dug || c.mat==='S') return 0;
+    return 9;                      // through packed earth: heavily muffled
+  }
+}
+
+function emitSound(layer, cx, cy, L, opts={}){
+  if(L<=0) return;
+  const best = [new Float32Array(NC).fill(-1), new Float32Array(NC).fill(-1)];
+  const si = idx(clamp(cx,0,W-1), clamp(cy,0,H-1));
+  best[layer][si] = L;
+  const q = [[layer, si]];
+  while(q.length){
+    const [ly, i] = q.shift();
+    const Lh = best[ly][i];
+    if(Lh<=0) continue;
+    const x=i%W, y=(i/W)|0;
+    for(const [dx,dy] of DIR4){
+      const nx=x+dx, ny=y+dy;
+      if(!inb(nx,ny)) continue;
+      const ni = idx(nx,ny);
+      const ec = soundStepCost(ly, ni);
+      if(ec<0) continue;
+      const nl = Lh - 1 - ec;
+      if(nl > best[ly][ni]){ best[ly][ni] = nl; q.push([ly, ni]); }
+    }
+    const oly = 1-ly;
+    const vcost = (holes.has(i) || surf[i]==='H') ? 3 : 5;
+    const vl = Lh - vcost;
+    if(vl > best[oly][i]){ best[oly][i] = vl; q.push([oly, i]); }
+  }
+
+  // guards hear (surface only)
+  if(!opts.silentToGuards){
+    for(const g of guards){
+      const gi = idx((g.x/T)|0, (g.y/T)|0);
+      const heard = best[0][gi];
+      const thr = 4;
+      if(heard > thr){
+        g.lastKnown = { x:cx*T+16, y:cy*T+16 };
+        g.susp = clamp(g.susp + (heard-thr)*7*g.aware, g.floor, 100);
+        if(heard >= 18) g.susp = Math.max(g.susp, 86);
+        if(g.susp>=25) stats.ghost = false;
+      }
+    }
+  }
+  // noise ring on the emitting layer
+  const cells = [];
+  const arr = best[layer];
+  for(let i=0;i<NC;i++) if(arr[i]>0) cells.push([i, arr[i]]);
+  rings.push({ layer, cells, t:1.0, max:L });
+}
+
+// ============================================================
+// Guard pathing
+// ============================================================
+function guardPassable(i){
+  const ch = surf[i];
+  if(ch==='#') return false;
+  if(ch==='W') return openWin.has(i);
+  const d = doors.get(i);
+  if(d && d.locked && !d.open) return false;
+  return true;
+}
+
+function findPath(sx, sy, tx, ty){
+  const si = idx(sx,sy), ti = idx(tx,ty);
+  if(si===ti) return [];
+  const prev = new Int32Array(NC).fill(-2);
+  prev[si] = -1;
+  const q = [si];
+  let bestReach = si, bestD = Math.abs(sx-tx)+Math.abs(sy-ty);
+  while(q.length){
+    const i = q.shift();
+    if(i===ti) break;
+    const x=i%W, y=(i/W)|0;
+    for(const [dx,dy] of DIR4){
+      const nx=x+dx, ny=y+dy;
+      if(!inb(nx,ny)) continue;
+      const ni = idx(nx,ny);
+      if(prev[ni]!==-2 || !guardPassable(ni)) continue;
+      prev[ni]=i; q.push(ni);
+      const d = Math.abs(nx-tx)+Math.abs(ny-ty);
+      if(d<bestD){ bestD=d; bestReach=ni; }
+    }
+  }
+  let end = prev[ti]!==-2 ? ti : bestReach;
+  const path = [];
+  while(end!==si && end>=0){ path.push(end); end = prev[end]; }
+  path.reverse();
+  return path;
+}
+
+// ============================================================
+// Player + reset
+// ============================================================
+function resetRun(){
+  genLevel();
+  player = {
+    x: 4*T+16, y: 2*T+16, vx:0, vy:0, tier:2, facing:[1,0],
+    stamina:100, spoil:0, picks:3, probes:10, timbers:6,
+    lootVal:0, layer:0, stepT:0, breathT:0, lowT:0,
+  };
+  exploredS = new Set(); exploredU = new Set();
+  rings = []; floaters = []; shake = 0; gameT = 0;
+  msgState = { text:'', t:0 };
+  lock = null; action = null;
+  stats = { ghost:true, snapped:false, glass:false, collapsed:false, alerted:false,
+            dug:0, picked:0, cause:'' };
+}
+
+function msg(t){ msgState = { text:t, t:4 }; }
+function floater(x, y, text, col){ floaters.push({ x, y, text, col:col||PAL.chalk, t:2.2 }); }
+
+// ============================================================
+// Audio (procedural, lazy)
+// ============================================================
+let AC = null;
+function ac(){
+  try{
+    if(!AC && typeof AudioContext!=='undefined') AC = new AudioContext();
+    if(AC && AC.state==='suspended') AC.resume();
+  }catch(e){}
+  return AC;
+}
+function blip(freq, dur, type, gain){
+  const a = ac(); if(!a) return;
+  try{
+    const o = a.createOscillator(), g = a.createGain();
+    o.type = type||'square'; o.frequency.value = freq;
+    g.gain.setValueAtTime(gain||0.08, a.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.0001, a.currentTime+dur);
+    o.connect(g); g.connect(a.destination);
+    o.start(); o.stop(a.currentTime+dur);
+  }catch(e){}
+}
+function noiseBurst(dur, gain, freq){
+  const a = ac(); if(!a) return;
+  try{
+    const n = Math.floor(a.sampleRate*dur);
+    const buf = a.createBuffer(1, n, a.sampleRate);
+    const d = buf.getChannelData(0);
+    for(let i=0;i<n;i++) d[i] = (Math.random()*2-1)*(1-i/n);
+    const src = a.createBufferSource(); src.buffer = buf;
+    const f = a.createBiquadFilter(); f.type='lowpass'; f.frequency.value = freq||500;
+    const g = a.createGain(); g.gain.value = gain||0.1;
+    src.connect(f); f.connect(g); g.connect(a.destination);
+    src.start();
+  }catch(e){}
+}
+const sfx = {
+  step: l => noiseBurst(0.05, clamp(0.02+l*0.012, 0.02, 0.3), 350+l*40),
+  click: () => blip(1700, 0.03, 'square', 0.09),
+  thud:  () => blip(180, 0.08, 'sine', 0.12),
+  snap:  () => { blip(300, 0.05, 'sawtooth', 0.15); noiseBurst(0.08, 0.12, 2500); },
+  dig:   l => noiseBurst(0.12, 0.03+l*0.01, 220),
+  alert: () => { blip(520, 0.12, 'square', 0.12); setTimeout(()=>blip(660,0.16,'square',0.12), 120); },
+  collapse: () => noiseBurst(1.2, 0.4, 110),
+  coin:  () => { blip(1300,0.05,'sine',0.1); setTimeout(()=>blip(1750,0.07,'sine',0.1),50); },
+  unlock:() => { blip(900,0.05,'square',0.1); setTimeout(()=>blip(600,0.1,'square',0.1),70); },
+};
+
+// ============================================================
+// Actions (hold-to-complete)
+// ============================================================
+function startAction(a){ action = a; action.t = 0; }
+function cancelAction(){ if(action){ action = null; } }
+
+function facingCell(){
+  const px = player.x/T, py = player.y/T;
+  const fx = (px + player.facing[0]*0.85)|0;
+  const fy = (py + player.facing[1]*0.85)|0;
+  return inb(fx,fy) ? idx(fx,fy) : -1;
+}
+function playerCell(){ return idx(clamp((player.x/T)|0,0,W-1), clamp((player.y/T)|0,0,H-1)); }
+
+function tryInteract(){
+  const here = playerCell();
+  const fi = facingCell();
+
+  if(player.layer===0){
+    // hatch / holes under your feet
+    if(surf[here]==='H' || holes.has(here)){
+      startAction({ type:'descend', total:0.8, label:'climbing down' }); return;
+    }
+    if(fi<0) return;
+    const d = doors.get(fi);
+    if(d){
+      if(d.locked && !d.open){
+        if(player.picks<=0){ msg('The lock stares back. You have no picks left.'); return; }
+        openLock(d); return;
+      }
+      d.open = !d.open;
+      emitSound(0, d.x, d.y, d.open?3:2);
+      sfx.thud();
+      msg(d.open ? `${d.label} — open` : `${d.label} — closed`);
+      return;
+    }
+    if(surf[fi]==='W' && !openWin.has(fi)){
+      startAction({ type:'cutglass', total:18, cell:fi, label:'cutting glass' }); return;
+    }
+    const bx = loot.find(l => !l.taken && l.type==='box' && idx(l.x,l.y)===fi);
+    if(bx){ startAction({ type:'lootbox', total:3, box:bx, label:'emptying the strongbox' }); return; }
+    if(surf[fi]==='H' || holes.has(fi)){
+      startAction({ type:'descend', total:0.8, label:'climbing down' }); return;
+    }
+  } else {
+    // subsurface
+    if(surf[here]==='H' || holes.has(here)){
+      startAction({ type:'ascend', total:0.8, label:'climbing up' }); return;
+    }
+    if(fi<0) return;
+    const c = sub[fi];
+    if(!c.dug && c.mat!=='S'){
+      const m = MAT[c.mat];
+      if(!m.dig){ msg('Bedrock. Reroute.'); return; }
+      if(c.mat==='B' && false) return;
+      if(player.spoil >= spoilCap()){ msg('You are carrying too much spoil. Dump it in the sewer (G).'); return; }
+      startAction({ type:'dig', total:m.t, cell:fi, mat:c.mat, tick:0, label:`digging ${m.name}` });
+      return;
+    }
+  }
+}
+
+function spoilCap(){ return 6; }
+
+function updateAction(dt){
+  if(!action) return;
+  action.t += dt;
+  if(action.type==='dig'){
+    action.tick += dt;
+    if(action.tick >= 0.8){
+      action.tick -= 0.8;
+      const n = MAT[action.mat].n;
+      if(n>0){ emitSound(1, action.cell%W, (action.cell/W)|0, n*3); sfx.dig(n); }
+    }
+    player.stamina = clamp(player.stamina - 6*dt, 0, 100);
+  }
+  if(action.type==='digup'){
+    action.tick = (action.tick||0) + dt;
+    if(action.tick >= 1){ action.tick -= 1; emitSound(1, action.cell%W, (action.cell/W)|0, 6); sfx.dig(2); }
+  }
+  if(action.t >= action.total) completeAction();
+}
+
+function completeAction(){
+  const a = action; action = null;
+  switch(a.type){
+    case 'descend': player.layer = 1; msg('Down into the dark. Your candle barely reaches.'); break;
+    case 'ascend':  player.layer = 0; msg('Back to the surface.'); break;
+    case 'cutglass': {
+      openWin.add(a.cell);
+      emitSound(0, a.cell%W, (a.cell/W)|0, 2);
+      msg('The pane lifts out whole. The window is yours.');
+      sfx.click();
+      break;
+    }
+    case 'lootbox': {
+      a.box.taken = true; player.lootVal += a.box.val;
+      emitSound(0, a.box.x, a.box.y, 2); sfx.coin();
+      msg(`The strongbox empties into your bag. +${a.box.val}`);
+      break;
+    }
+    case 'dig': {
+      const c = sub[a.cell];
+      c.dug = true; c.probed = true; player.spoil++; stats.dug++;
+      sfx.dig(2);
+      collapseCheck(a.cell);
+      break;
+    }
+    case 'digup': {
+      holes.add(a.cell);
+      emitSound(0, a.cell%W, (a.cell/W)|0, 5);
+      msg('Lamplight through the floorboards. You are under the strongroom.');
+      break;
+    }
+    case 'probe': {
+      const cx = a.cell%W, cy = (a.cell/W)|0;
+      sub[a.cell].probed = true;
+      for(const [dx,dy] of DIR4) if(inb(cx+dx,cy+dy)) sub[idx(cx+dx,cy+dy)].probed = true;
+      emitSound(1, cx, cy, 1);
+      msg(`Probe: ${MAT[sub[a.cell].mat].name}.`);
+      sfx.click();
+      break;
+    }
+  }
+}
+
+// ---------- collapse ----------
+function tunnelRegion(startI){
+  // connected dug, unshored, non-sewer cells; returns {cells, weight}
+  const seen = new Set([startI]);
+  const q = [startI]; const cells = [];
+  let weight = 0;
+  while(q.length){
+    const i = q.pop();
+    const c = sub[i];
+    if(!c.dug || c.shored || c.mat==='S') continue;
+    cells.push(i);
+    weight += MAT[c.mat].wt;
+    const x=i%W, y=(i/W)|0;
+    for(const [dx,dy] of DIR4){
+      const nx=x+dx, ny=y+dy;
+      if(!inb(nx,ny)) continue;
+      const ni = idx(nx,ny);
+      if(seen.has(ni)) continue;
+      seen.add(ni);
+      const nc = sub[ni];
+      if(nc.dug && !nc.shored && nc.mat!=='S') q.push(ni);
+    }
+  }
+  return { cells, weight };
+}
+
+function collapseCheck(newCell){
+  const r = tunnelRegion(newCell);
+  if(r.weight > 3){ doCollapse(r); return; }
+  if(r.weight === 3) msg('The ceiling groans. Shore it (T) before you dig on.');
+  else if(r.weight === 2) msg(`Unshored span ${r.weight}/3.`);
+}
+
+function doCollapse(region){
+  let sx=0, sy=0;
+  for(const i of region.cells){ sx += i%W; sy += (i/W)|0; }
+  sx = Math.round(sx/region.cells.length); sy = Math.round(sy/region.cells.length);
+  const pcell = playerCell();
+  let buried = false;
+  for(const i of region.cells){
+    const c = sub[i];
+    if(MAT[c.mat].wt === 0) continue;      // clay and root mass hold
+    c.dug = false; c.shored = false; c.mat = 'U'; c.probed = true;
+    if(player.layer===1 && i===pcell) buried = true;
+  }
+  stats.collapsed = true;
+  shake = 1.2;
+  sfx.collapse();
+  emitSound(1, sx, sy, 30);
+  if(buried){ stats.cause = 'The tunnel came down on you.'; mode = 'caught'; }
+  else msg('Progressive collapse. The tunnel is gone, and half the district heard it.');
+}
+
+// ============================================================
+// Lockpicking
+// ============================================================
+function openLock(door){
+  const pins = [];
+  for(let i=0;i<door.pins;i++){
+    const w = clamp(24 - door.pins*2.4, 6, 20);
+    pins.push({ c: 12 + Math.random()*66, w, set:false });
+  }
+  lock = { door, pins, cur:0, prog:0, wrong:0, edge:0 };
+  msg(touch.used
+    ? `${door.label}: ${door.pins} pins. Hold TENSION, sweep the pick with your other thumb.`
+    : `${door.label}: ${door.pins} pins. Hold SPACE for tension, steer the pick with the mouse.`);
+}
+
+function lockUpdate(dt){
+  const ang = clamp((mouse.x / VIEW_W) * 90, 0, 90);
+  lock.ang = ang;
+  const tension = !!keys[' '];
+  if(!tension){ lock.wrong = 0; lock.edge = 0; lock.prog = Math.max(0, lock.prog - dt*2); return; }
+  if(lock.cur >= lock.pins.length) return;
+  const pin = lock.pins[lock.cur];
+  const inArc = Math.abs(ang - pin.c) < pin.w/2;
+  if(inArc){
+    lock.prog += dt; lock.wrong = 0;
+    if(lock.prog >= 0.5){
+      pin.set = true; lock.cur++; lock.prog = 0;
+      sfx.click();
+      emitSound(0, lock.door.x, lock.door.y, 2);
+      if(lock.cur >= lock.pins.length){
+        lock.door.locked = false; lock.door.open = true;
+        emitSound(0, lock.door.x, lock.door.y, 3);
+        sfx.unlock();
+        stats.picked++;
+        msg(`${lock.door.label} gives. You are in.`);
+        lock = null;
+        return;
+      }
+    }
+  } else {
+    lock.prog = 0;
+    lock.wrong += dt;
+    if(lock.wrong > 1.2){
+      for(const p of lock.pins) p.set = false;
+      lock.cur = 0; lock.wrong = 0;
+      sfx.thud();
+      emitSound(0, lock.door.x, lock.door.y, 1);
+    }
+    if(ang < 6 || ang > 84){
+      lock.edge += dt;
+      if(lock.edge > 0.6){
+        lock.edge = 0;
+        player.picks--; stats.snapped = true;
+        sfx.snap();
+        emitSound(0, lock.door.x, lock.door.y, 9);
+        for(const p of lock.pins) p.set = false;
+        lock.cur = 0;
+        msg(player.picks>0
+          ? `Pick snapped in the lock. ${player.picks} left — and the stub is evidence.`
+          : 'Your last pick snaps. This door will not be picked tonight.');
+        if(player.picks<=0) lock = null;
+      }
+    } else lock.edge = 0;
+  }
+}
+
+// ============================================================
+// Guards
+// ============================================================
+function guardCanSee(g){
+  if(player.layer !== 0 || mode!=='play') return false;
+  const dx = player.x - g.x, dy = player.y - g.y;
+  const d = Math.hypot(dx, dy);
+  if(d > 230) return false;
+  const ang = Math.atan2(dy, dx);
+  let da = Math.abs(ang - g.face);
+  if(da > Math.PI) da = TAU - da;
+  if(da > Math.PI/4) return false;
+  return losTiles(g.x/T, g.y/T, player.x/T, player.y/T);
+}
+
+function guardOpenDoorAt(i){
+  const d = doors.get(i);
+  if(d && !d.open && !d.locked){ d.open = true; emitSound(0, d.x, d.y, 3, {silentToGuards:true}); }
+}
+
+function guardMoveAlong(g, speed, dt){
+  if(!g.path || g.pi >= g.path.length) return true;
+  const ti = g.path[g.pi];
+  const tx = (ti%W)*T+16, ty = ((ti/W)|0)*T+16;
+  const dx = tx - g.x, dy = ty - g.y;
+  const d = Math.hypot(dx, dy);
+  if(d < 3){ g.pi++; return g.pi >= g.path.length; }
+  guardOpenDoorAt(ti);
+  g.face = Math.atan2(dy, dx);
+  g.x += dx/d * speed * dt;
+  g.y += dy/d * speed * dt;
+  return false;
+}
+
+function setPathTo(g, tx, ty){
+  g.path = findPath((g.x/T)|0, (g.y/T)|0, clamp(tx,0,W-1), clamp(ty,0,H-1));
+  g.pi = 0;
+}
+
+function guardUpdate(g, dt){
+  const canSee = guardCanSee(g);
+  if(canSee){
+    const d = Math.hypot(player.x-g.x, player.y-g.y);
+    const falloff = clamp(1.15 - d/230, 0, 1.15);
+    g.susp = clamp(g.susp + playerV() * falloff * g.aware * dt * 55, g.floor, 100);
+    g.lastKnown = { x:player.x, y:player.y };
+    g.lastSeen = gameT;
+    if(d < 26){ g.susp = 100; }
+  } else if(gameT - g.lastSeen > 1.6){
+    g.susp = Math.max(g.floor, g.susp - 8*dt);
+  }
+  if(g.susp >= 25) stats.ghost = false;
+
+  // state transitions
+  if(g.susp >= 85 && g.state !== 'alert'){
+    g.state = 'alert';
+    if(!g.shouted){
+      g.shouted = true; stats.alerted = true;
+      floater(g.x, g.y-22, 'INTRUDER!', PAL.oxide);
+      sfx.alert();
+      emitSound(0, (g.x/T)|0, (g.y/T)|0, 22, {silentToGuards:false});
+      for(const o of guards){
+        if(o!==g && o.state==='patrol'){
+          o.susp = Math.max(o.susp, 60);
+          o.lastKnown = { x:g.x, y:g.y };
+        }
+      }
+    }
+    g.repathT = 0;
+  }
+  else if(g.susp >= 55 && (g.state==='patrol' || g.state==='curious')){
+    g.state = 'investigate';
+    floater(g.x, g.y-22, 'Who\u2019s there?', PAL.sodium);
+    if(g.lastKnown) setPathTo(g, (g.lastKnown.x/T)|0, (g.lastKnown.y/T)|0);
+    g.sweepT = 0;
+  }
+  else if(g.susp >= 25 && g.state==='patrol'){
+    g.state = 'curious'; g.holdT = 2.5;
+    floater(g.x, g.y-22, '\u2026what was that?', PAL.chalk);
+  }
+
+  switch(g.state){
+    case 'patrol': {
+      if(!g.path || g.pi >= g.path.length){
+        const wp = g.wps[g.wp];
+        const gi = playerTileOf(g);
+        if(gi[0]===wp[0] && gi[1]===wp[1]){ g.wp = (g.wp+1)%g.wps.length; }
+        setPathTo(g, g.wps[g.wp][0], g.wps[g.wp][1]);
+      }
+      guardMoveAlong(g, 52, dt);
+      break;
+    }
+    case 'curious': {
+      if(g.lastKnown) g.face = Math.atan2(g.lastKnown.y-g.y, g.lastKnown.x-g.x);
+      g.holdT -= dt;
+      if(g.holdT <= 0 && g.susp < 25){ g.state='patrol'; g.path=null; }
+      break;
+    }
+    case 'investigate': {
+      if(g.lastKnown && g.repathT<=0){ setPathTo(g, (g.lastKnown.x/T)|0, (g.lastKnown.y/T)|0); g.repathT=1.2; }
+      g.repathT -= dt;
+      const arrived = guardMoveAlong(g, 72, dt);
+      if(arrived){
+        g.sweepT += dt;
+        g.face += dt * 1.4;
+        if(g.sweepT > 8){
+          g.floor = clamp(g.floor + 9, 0, 60);
+          g.aware *= 1.1;
+          g.susp = g.floor;
+          g.state = 'patrol'; g.path = null; g.sweepT = 0;
+          floater(g.x, g.y-22, 'Hm.', PAL.draft);
+        }
+      }
+      break;
+    }
+    case 'alert': {
+      const target = canSee ? { x:player.x, y:player.y } : g.lastKnown;
+      g.repathT -= dt;
+      if(target && g.repathT<=0){ setPathTo(g, (target.x/T)|0, (target.y/T)|0); g.repathT = 0.5; }
+      const arrived = guardMoveAlong(g, 96, dt);
+      if(canSee) g.arriveNoSeeT = 0;
+      else if(arrived){
+        g.arriveNoSeeT += dt;
+        g.face += dt*2;
+        if(g.arriveNoSeeT > 5){
+          g.floor = clamp(g.floor + 9, 0, 60);
+          g.aware *= 1.1;
+          g.susp = g.floor; g.shouted = false;
+          g.state = 'patrol'; g.path = null; g.arriveNoSeeT = 0;
+        }
+      }
+      if(player.layer===0 && Math.hypot(player.x-g.x, player.y-g.y) < 18){
+        stats.cause = 'A hand closes on your collar.';
+        mode = 'caught';
+      }
+      break;
+    }
+  }
+}
+function playerTileOf(g){ return [(g.x/T)|0, (g.y/T)|0]; }
+
+// ============================================================
+// Player update
+// ============================================================
+function playerUpdate(dt){
+  const tier = TIERS[player.tier];
+  let ix = 0, iy = 0;
+  if(keys['a']||keys['arrowleft']) ix -= 1;
+  if(keys['d']||keys['arrowright']) ix += 1;
+  if(keys['w']||keys['arrowup']) iy -= 1;
+  if(keys['s']||keys['arrowdown']) iy += 1;
+  if(touch.stick && touch.mag > 0){
+    ix = touch.vec[0]; iy = touch.vec[1];
+    player.tier = touch.tier;
+  }
+  const moving = (ix||iy);
+  if(moving && action && action.type!=='descend' && action.type!=='ascend') cancelAction();
+  if(moving){
+    const l = Math.hypot(ix,iy); ix/=l; iy/=l;
+    player.facing = [ix, iy];
+  }
+
+  // stamina
+  if(player.tier===4 && moving) player.stamina = clamp(player.stamina - 12*dt, 0, 100);
+  else if(player.tier<=2) player.stamina = clamp(player.stamina + 9*dt, 0, 100);
+  if(player.stamina<=0 && player.tier===4){ player.tier = 3; msg('Winded. You drop to a walk.'); }
+  if(player.tier===0 && player.spoil>2){ player.tier = 1; msg('Too much spoil to crawl flat.'); }
+
+  // momentum
+  const spd = (action && (action.type==='dig'||action.type==='digup'||action.type==='cutglass'||action.type==='lootbox'||action.type==='probe')) ? 0 : tier.spd;
+  const txv = ix*spd, tyv = iy*spd;
+  const accel = (Math.abs(txv)>Math.abs(player.vx)||Math.abs(tyv)>Math.abs(player.vy)) ? 380 : 520;
+  player.vx += clamp(txv - player.vx, -accel*dt, accel*dt);
+  player.vy += clamp(tyv - player.vy, -accel*dt, accel*dt);
+
+  moveCollide(player.vx*dt, player.vy*dt);
+
+  // footsteps
+  const speed = Math.hypot(player.vx, player.vy);
+  if(speed > tier.spd*0.35 && tier.base>0 && player.layer===0){
+    player.stepT -= dt;
+    if(player.stepT <= 0){
+      player.stepT = tier.int;
+      const s = SURF[glassCells.has(playerCell()) ? '#' : surf[playerCell()]] || SURF['.'];
+      let m = glassCells.has(playerCell()) ? 3.2 : s.mult;
+      const loud = tier.base * m;
+      if(loud > 0.4){ emitSound(0, (player.x/T)|0, (player.y/T)|0, loud); sfx.step(loud); }
+    }
+  } else if(player.layer===1 && speed>4 && tier.base>0){
+    player.stepT -= dt;
+    if(player.stepT<=0){ player.stepT = tier.int; sfx.step(1); }
+  }
+  // breath after running
+  if(player.tier===4 && speed>60) player.breathT = 4;
+  else if(player.breathT>0){
+    player.breathT -= dt;
+    player.lowT -= dt;
+    if(player.lowT<=0){ player.lowT = 1; emitSound(player.layer, (player.x/T)|0, (player.y/T)|0, 2); }
+  } else if(player.stamina < 20 && speed < 4){
+    player.lowT -= dt;
+    if(player.lowT<=0){ player.lowT = 1.2; emitSound(player.layer, (player.x/T)|0, (player.y/T)|0, 3); }
+  }
+
+  // coin pickup
+  if(player.layer===0){
+    for(const l of loot){
+      if(l.taken || l.type!=='coin') continue;
+      if(dist2(player.x, player.y, l.x*T+16, l.y*T+16) < 20*20){
+        l.taken = true; player.lootVal += l.val; sfx.coin();
+        msg(`A purse of coin. +${l.val}`);
+      }
+    }
+    // exit
+    if(surf[playerCell()]==='X'){
+      mode = 'escaped';
+    }
+  }
+
+  updateAction(dt);
+}
+
+function moveCollide(dx, dy){
+  const r = 9;
+  const layer = player.layer;
+  const ok = (px, py) => {
+    for(const [ox,oy] of [[-r,-r],[r,-r],[-r,r],[r,r]]){
+      const tx = ((px+ox)/T)|0, ty = ((py+oy)/T)|0;
+      if(!inb(tx,ty) || !walk(layer, idx(tx,ty))) return false;
+    }
+    return true;
+  };
+  if(ok(player.x+dx, player.y)) player.x += dx; else player.vx = 0;
+  if(ok(player.x, player.y+dy)) player.y += dy; else player.vy = 0;
+}
+
+// ============================================================
+// Input
+// ============================================================
+const keys = {};
+const mouse = { x:VIEW_W/2, y:VIEW_H/2, down:false };
+
+// ============================================================
+// Touch (mobile landscape)
+// ============================================================
+const isTouchDevice = (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0)
+  || (typeof window !== 'undefined' && 'ontouchstart' in window);
+const touch = {
+  used: false,
+  stick: null,           // { id, ox, oy, kx, ky }  (origin + knob pos, canvas coords)
+  vec: [0,0], mag: 0, tier: 0,
+  holds: new Map(),      // touch id -> key it is holding down
+  pickId: null,          // touch id steering the lockpick
+};
+let touchButtons = [];   // rebuilt every frame: { x, y, r, k, label, big }
+
+function buildTouchButtons(){
+  touchButtons = [];
+  if(!touch.used) return;
+  if(mode !== 'play') return;
+  const B = (x,y,r,k,label,big) => touchButtons.push({x,y,r,k,label,big});
+  if(lock){
+    B(866, 500, 56, ' ', 'TENSION', true);
+    B(60, 52, 32, 'escape', 'LEAVE');
+    return;
+  }
+  B(872, 502, 52, 'e', 'ACT', true);
+  if(action) B(60, 52, 32, 'escape', 'STOP');
+  if(player.layer === 0){
+    const fi = facingCell();
+    if(fi >= 0 && surf[fi] === 'W' && !openWin.has(fi)) B(764, 556, 34, 'r', 'SMASH');
+  } else {
+    B(764, 556, 34, 'f', 'PROBE');
+    B(736, 468, 34, 't', 'SHORE');
+    const here = playerCell();
+    if(weakSet.has(here) || holes.has(here)) B(756, 382, 34, 'c', 'UP');
+    else if(sub[here] && sub[here].mat === 'S' && player.spoil > 0) B(756, 382, 34, 'g', 'DUMP');
+  }
+}
+
+function stickApply(cx, cy){
+  const st = touch.stick;
+  let dx = cx - st.ox, dy = cy - st.oy;
+  const R = 74;
+  const d = Math.hypot(dx, dy);
+  if(d > R){ dx = dx/d*R; dy = dy/d*R; }
+  st.kx = st.ox + dx; st.ky = st.oy + dy;
+  const mag = Math.min(1, d / R);
+  if(mag < 0.14){ touch.vec = [0,0]; touch.mag = 0; return; }
+  touch.vec = [dx / (d||1), dy / (d||1)];
+  touch.mag = mag;
+  touch.tier = mag < 0.32 ? 0 : mag < 0.52 ? 1 : mag < 0.72 ? 2 : mag < 0.90 ? 3 : 4;
+}
+
+function canvasXY(t){
+  const r = canvas.getBoundingClientRect();
+  return [ (t.clientX - r.left) * (VIEW_W / r.width),
+           (t.clientY - r.top) * (CANVAS_H / r.height) ];
+}
+
+function goFullscreen(){
+  try {
+    const el = document.documentElement;
+    if(el && el.requestFullscreen && !document.fullscreenElement){
+      el.requestFullscreen().then(() => {
+        try { screen.orientation && screen.orientation.lock && screen.orientation.lock('landscape').catch(()=>{}); }
+        catch(_){}
+      }).catch(()=>{});
+    }
+  } catch(_){}
+}
+
+function onTouchStart(e){
+  e.preventDefault();
+  touch.used = true;
+  ac();
+  if(mode === 'title'){ goFullscreen(); mode = 'play'; return; }
+  if(mode === 'caught' || mode === 'escaped'){ resetRun(); mode = 'play'; return; }
+  for(const t of e.changedTouches){
+    const [cx, cy] = canvasXY(t);
+    let hit = null;
+    for(const b of touchButtons)
+      if(Math.hypot(cx - b.x, cy - b.y) <= b.r + 8){ hit = b; break; }
+    if(hit){
+      touch.holds.set(t.identifier, hit.k);
+      keys[hit.k] = true;
+      handlePress(hit.k);
+    } else if(lock){
+      touch.pickId = t.identifier;
+      mouse.x = cx;
+    } else if(cx < VIEW_W * 0.46 && !touch.stick){
+      touch.stick = { id: t.identifier, ox: cx, oy: cy, kx: cx, ky: cy };
+      stickApply(cx, cy);
+    }
+  }
+}
+function onTouchMove(e){
+  e.preventDefault();
+  for(const t of e.changedTouches){
+    const [cx, cy] = canvasXY(t);
+    if(touch.stick && t.identifier === touch.stick.id) stickApply(cx, cy);
+    else if(t.identifier === touch.pickId) mouse.x = clamp(cx, 0, VIEW_W);
+  }
+}
+function onTouchEnd(e){
+  e.preventDefault();
+  for(const t of e.changedTouches){
+    if(touch.stick && t.identifier === touch.stick.id){
+      touch.stick = null; touch.vec = [0,0]; touch.mag = 0;
+    }
+    if(t.identifier === touch.pickId) touch.pickId = null;
+    const k = touch.holds.get(t.identifier);
+    if(k !== undefined){
+      touch.holds.delete(t.identifier);
+      if(![...touch.holds.values()].includes(k)){
+        keys[k] = false;
+        if(action && action.type === 'dig' && k === 'e') cancelAction();
+      }
+    }
+  }
+}
+
+function onKeyDown(e){
+  const k = e.key.toLowerCase();
+  if(keys[k]) { keys[k]=true; if([' ','arrowup','arrowdown','arrowleft','arrowright'].includes(k)) e.preventDefault(); return; }
+  keys[k] = true;
+  ac();
+  if([' ','arrowup','arrowdown','arrowleft','arrowright'].includes(k)) e.preventDefault();
+
+  if(mode==='title'){ if(k==='enter'||k===' ') mode='play'; return; }
+  if(mode==='caught' || mode==='escaped'){ if(k==='r'||k==='enter'){ resetRun(); mode='play'; } return; }
+  if(mode!=='play') return;
+  handlePress(k);
+}
+
+function handlePress(k){
+  if(lock){
+    if(k==='escape'){ lock = null; msg('You ease off the lock.'); }
+    return;
+  }
+  if(k==='escape'){ cancelAction(); return; }
+  if(k>='1' && k<='5'){ player.tier = +k-1; return; }
+  if(k==='e'){ tryInteract(); return; }
+  if(k==='r' && player.layer===0){
+    const fi = facingCell();
+    if(fi>=0 && surf[fi]==='W' && !openWin.has(fi)){
+      openWin.add(fi); stats.glass = true;
+      glassCells.add(fi);
+      emitSound(0, fi%W, (fi/W)|0, 17);
+      noiseBurst(0.25, 0.3, 3500);
+      msg('The pane shatters. Everyone within a street heard that.');
+    }
+    return;
+  }
+  if(k==='f' && player.layer===1){
+    if(player.probes<=0){ msg('No probe charges left.'); return; }
+    const fi = facingCell();
+    if(fi>=0 && !sub[fi].dug && sub[fi].mat!=='S'){
+      player.probes--;
+      startAction({ type:'probe', total:3, cell:fi, label:'probing' });
+    }
+    return;
+  }
+  if(k==='t' && player.layer===1){
+    const here = playerCell();
+    const c = sub[here];
+    if(c.dug && !c.shored){
+      if(player.timbers<=0){ msg('No shoring timbers left.'); return; }
+      player.timbers--; c.shored = true; sfx.thud();
+      msg(`Timber set. ${player.timbers} left.`);
+    }
+    return;
+  }
+  if(k==='g' && player.layer===1){
+    if(sub[playerCell()].mat==='S'){
+      if(player.spoil>0){ msg(`${player.spoil} spoil into the sewer. Gone.`); player.spoil = 0; sfx.thud(); }
+      else msg('Nothing to dump.');
+    } else msg('Spoil can only vanish into the sewer.');
+    return;
+  }
+  if(k==='c' && player.layer===1){
+    const here = playerCell();
+    if(weakSet.has(here) && !holes.has(here)){
+      startAction({ type:'digup', total:8, cell:here, label:'digging up through the floor' });
+    } else if(holes.has(here)){
+      startAction({ type:'ascend', total:0.8, label:'climbing up' });
+    } else msg('The ceiling here is solid ground. Weak floor lies under the strongroom.');
+    return;
+  }
+}
+function onKeyUp(e){
+  const k = e.key.toLowerCase();
+  keys[k] = false;
+  if(action && action.type==='dig' && !keys['e']) cancelAction();
+  if(action && (action.type==='cutglass'||action.type==='lootbox'||action.type==='probe'||action.type==='digup') && k==='e') {}
+}
+function onWheel(e){
+  if(mode!=='play' || lock) return;
+  player.tier = clamp(player.tier + (e.deltaY>0?-1:1), 0, 4);
+  e.preventDefault();
+}
+
+// hold-to-continue for E-driven digs
+function holdChecks(){
+  if(action && action.type==='dig' && !keys['e']) cancelAction();
+}
+
+// ============================================================
+// Render
+// ============================================================
+let canvas, ctx;
+
+function tilePx(i){ return [(i%W)*T, ((i/W)|0)*T]; }
+
+function render(){
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.fillStyle = PAL.void;
+  ctx.fillRect(0,0,VIEW_W,CANVAS_H);
+
+  const shx = shake>0 ? (Math.random()-0.5)*shake*14 : 0;
+  const shy = shake>0 ? (Math.random()-0.5)*shake*14 : 0;
+
+  camX = clamp(player.x - VIEW_W/2, 0, W*T - VIEW_W);
+  camY = clamp(player.y - VIEW_H/2, 0, H*T - VIEW_H);
+  ctx.save();
+  ctx.beginPath(); ctx.rect(0,0,VIEW_W,VIEW_H); ctx.clip();
+  ctx.translate(-camX+shx, -camY+shy);
+
+  const x0 = (camX/T)|0, y0 = (camY/T)|0;
+  const x1 = Math.min(W-1, ((camX+VIEW_W)/T)|0), y1 = Math.min(H-1, ((camY+VIEW_H)/T)|0);
+
+  if(player.layer===0) renderSurface(x0,y0,x1,y1);
+  else renderSub(x0,y0,x1,y1);
+
+  renderRings();
+  if(player.layer===0) renderGuards();
+  renderPlayer();
+  renderFloaters();
+  ctx.restore();
+
+  renderHUD();
+  if(lock) renderLock();
+  buildTouchButtons();
+  renderTouchUI();
+  if(mode==='title') renderTitle();
+  if(mode==='caught') renderEnd(false);
+  if(mode==='escaped') renderEnd(true);
+}
+
+function renderSurface(x0,y0,x1,y1){
+  const pv = playerV();
+  for(let y=y0;y<=y1;y++) for(let x=x0;x<=x1;x++){
+    const i = idx(x,y);
+    const vis = visNow.has(i);
+    const exp = exploredS.has(i);
+    if(!vis && !exp) continue;
+    const px = x*T, py = y*T;
+    const ch = surf[i];
+    const d = doors.get(i);
+    if(vis){
+      const lt = clamp(lightAtPx(px+16, py+16), 0.05, 1);
+      if(ch==='#'){
+        ctx.fillStyle = mix(PAL.draft, PAL.chalk, lt*0.55);
+        ctx.fillRect(px,py,T,T);
+        ctx.fillStyle = PAL.void; ctx.globalAlpha = 0.25;
+        ctx.fillRect(px+2,py+2,T-4,T-4); ctx.globalAlpha = 1;
+      } else if(ch==='W'){
+        ctx.fillStyle = mix(PAL.draft, PAL.chalk, lt*0.5); ctx.fillRect(px,py,T,T);
+        ctx.fillStyle = openWin.has(i) ? PAL.void : mix(PAL.void, PAL.verd, 0.45);
+        ctx.fillRect(px+4, py+10, T-8, T-20);
+      } else {
+        ctx.fillStyle = mix(PAL.void, PAL.sodium, 0.06 + lt*0.5);
+        ctx.fillRect(px,py,T,T);
+        ctx.strokeStyle = PAL.void; ctx.globalAlpha = 0.18;
+        ctx.strokeRect(px+0.5,py+0.5,T-1,T-1); ctx.globalAlpha = 1;
+        if(ch==='g'||ch===','){ ctx.fillStyle = PAL.void; ctx.globalAlpha=0.15;
+          ctx.fillRect(px+6,py+6,3,3); ctx.fillRect(px+20,py+16,3,3); ctx.globalAlpha=1; }
+        if(ch==='X'){ ctx.fillStyle = PAL.verd; ctx.globalAlpha=0.5;
+          ctx.fillRect(px+4,py+13,T-8,6); ctx.globalAlpha=1; }
+        if(ch==='H'){ ctx.strokeStyle = PAL.chalk; ctx.lineWidth=2;
+          ctx.beginPath(); ctx.arc(px+16,py+16,10,0,TAU); ctx.stroke();
+          ctx.fillStyle = PAL.void; ctx.beginPath(); ctx.arc(px+16,py+16,7,0,TAU); ctx.fill(); }
+        if(holes.has(i)){ ctx.fillStyle = PAL.void;
+          ctx.beginPath(); ctx.arc(px+16,py+16,11,0,TAU); ctx.fill();
+          ctx.strokeStyle = PAL.oxide; ctx.stroke(); }
+        if(weakSet.has(i) && !holes.has(i)){ ctx.strokeStyle = PAL.draft; ctx.globalAlpha=0.5;
+          ctx.strokeRect(px+6.5,py+6.5,T-13,T-13); ctx.globalAlpha=1; }
+      }
+      if(d) drawDoor(d, px, py, true);
+    } else {
+      // blueprint memory
+      if(ch==='#'){
+        ctx.strokeStyle = PAL.draft; ctx.lineWidth = 1;
+        ctx.strokeRect(px+1.5, py+1.5, T-3, T-3);
+        ctx.beginPath(); ctx.moveTo(px+3, py+T-3); ctx.lineTo(px+T-3, py+3);
+        ctx.globalAlpha = 0.6; ctx.stroke(); ctx.globalAlpha = 1;
+      } else if(ch==='W'){
+        ctx.strokeStyle = PAL.draft;
+        ctx.strokeRect(px+4.5, py+10.5, T-9, T-21);
+      } else {
+        ctx.fillStyle = PAL.draft; ctx.globalAlpha = 0.22;
+        ctx.fillRect(px+15, py+15, 2, 2); ctx.globalAlpha = 1;
+        if(ch==='X'){ ctx.strokeStyle=PAL.draft; ctx.strokeRect(px+4.5,py+13.5,T-9,5); }
+        if(ch==='H'){ ctx.strokeStyle=PAL.draft; ctx.beginPath(); ctx.arc(px+16,py+16,9,0,TAU); ctx.stroke(); }
+        if(d) drawDoor(d, px, py, false);
+      }
+    }
+  }
+  // loot (visible only)
+  for(const l of loot){
+    if(l.taken) continue;
+    const i = idx(l.x,l.y);
+    if(!visNow.has(i) && !exploredS.has(i)) continue;
+    const vis = visNow.has(i);
+    const px = l.x*T, py = l.y*T;
+    if(l.type==='coin'){
+      ctx.fillStyle = vis ? PAL.sodium : PAL.draft;
+      ctx.beginPath(); ctx.arc(px+16, py+16, 5, 0, TAU); ctx.fill();
+      ctx.strokeStyle = vis ? PAL.chalk : PAL.draft; ctx.stroke();
+    } else {
+      ctx.fillStyle = vis ? PAL.verd : PAL.draft;
+      ctx.fillRect(px+7, py+9, 18, 14);
+      ctx.strokeStyle = vis ? PAL.chalk : PAL.draft;
+      ctx.strokeRect(px+7.5, py+9.5, 17, 13);
+      ctx.fillStyle = PAL.void; ctx.fillRect(px+14, py+14, 4, 4);
+    }
+  }
+}
+
+function drawDoor(d, px, py, lit){
+  ctx.strokeStyle = lit ? (d.locked ? PAL.oxide : PAL.verd) : PAL.draft;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  if(d.open){ ctx.moveTo(px+4, py+4); ctx.lineTo(px+14, py+14); }
+  else { ctx.moveTo(px+4, py+16); ctx.lineTo(px+28, py+16); }
+  ctx.stroke();
+  ctx.lineWidth = 1;
+  if(d.locked && !d.open && lit){
+    ctx.fillStyle = PAL.oxide;
+    ctx.fillRect(px+13, py+9, 6, 5);
+  }
+}
+
+const MATCOL = { L:0.35, C:0.5, R:0.42, G:0.6, U:0.55, B:0.75, K:0.9, S:0.2 };
+function renderSub(x0,y0,x1,y1){
+  for(let y=y0;y<=y1;y++) for(let x=x0;x<=x1;x++){
+    const i = idx(x,y);
+    const vis = visNow.has(i);
+    const exp = exploredU.has(i);
+    const c = sub[i];
+    if(!vis && !exp && !c.probed) continue;
+    const px = x*T, py = y*T;
+    if(c.dug || c.mat==='S'){
+      const lit = vis ? clamp(1 - Math.hypot(player.x-px-16, player.y-py-16)/(4.5*T), 0, 1) : 0;
+      ctx.fillStyle = vis ? mix(PAL.void, PAL.sodium, 0.05 + lit*0.4) : PAL.void;
+      ctx.fillRect(px,py,T,T);
+      if(!vis){ ctx.strokeStyle = PAL.draft; ctx.globalAlpha=0.4; ctx.strokeRect(px+1.5,py+1.5,T-3,T-3); ctx.globalAlpha=1; }
+      if(c.mat==='S' && vis){
+        ctx.strokeStyle = PAL.verd; ctx.globalAlpha = 0.35;
+        ctx.beginPath(); ctx.moveTo(px, py+22); ctx.lineTo(px+T, py+22); ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+      if(c.shored){
+        ctx.strokeStyle = vis ? PAL.verd : PAL.draft; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.moveTo(px+5, py+3); ctx.lineTo(px+5, py+T-3);
+        ctx.moveTo(px+T-5, py+3); ctx.lineTo(px+T-5, py+T-3);
+        ctx.moveTo(px+3, py+5); ctx.lineTo(px+T-3, py+5); ctx.stroke();
+        ctx.lineWidth = 1;
+      }
+      if(weakSet.has(i) && !holes.has(i) && vis){
+        ctx.strokeStyle = PAL.sodium; ctx.globalAlpha=0.7;
+        ctx.setLineDash([3,3]); ctx.strokeRect(px+5.5,py+5.5,T-11,T-11);
+        ctx.setLineDash([]); ctx.globalAlpha=1;
+      }
+      if(holes.has(i) && vis){
+        ctx.strokeStyle = PAL.sodium;
+        ctx.beginPath(); ctx.arc(px+16,py+16,10,0,TAU); ctx.stroke();
+      }
+    } else if(c.probed){
+      ctx.fillStyle = mix(PAL.void, PAL.draft, MATCOL[c.mat]);
+      ctx.fillRect(px,py,T,T);
+      ctx.strokeStyle = PAL.void; ctx.strokeRect(px+0.5,py+0.5,T-1,T-1);
+      ctx.fillStyle = PAL.chalk; ctx.globalAlpha = 0.8;
+      ctx.font = '10px monospace'; ctx.textAlign='center';
+      const lbl = { L:'lm', C:'cl', R:'rt', G:'gv', U:'rb', B:'ft', K:'RK', S:'sw' }[c.mat];
+      ctx.fillText(lbl, px+16, py+20);
+      ctx.globalAlpha = 1;
+    } else if(vis || exp){
+      // tunnel wall face
+      ctx.fillStyle = mix(PAL.void, PAL.draft, 0.5);
+      ctx.fillRect(px,py,T,T);
+      ctx.strokeStyle = PAL.void; ctx.strokeRect(px+0.5,py+0.5,T-1,T-1);
+    }
+  }
+}
+
+function renderRings(){
+  for(const r of rings){
+    if(r.layer !== player.layer) continue;
+    const a = r.t;
+    for(const [i, L] of r.cells){
+      const [px, py] = tilePx(i);
+      ctx.fillStyle = PAL.oxide;
+      ctx.globalAlpha = clamp(L / r.max, 0.08, 0.8) * a * 0.3;
+      ctx.fillRect(px, py, T, T);
+    }
+    ctx.globalAlpha = 1;
+  }
+}
+
+function renderGuards(){
+  for(const g of guards){
+    const gi = idx((g.x/T)|0, (g.y/T)|0);
+    if(!visNow.has(gi)) continue;
+    // vision cone
+    const coneCol = g.state==='alert' ? PAL.oxide : g.susp>25 ? PAL.sodium : PAL.chalk;
+    ctx.fillStyle = coneCol; ctx.globalAlpha = 0.08;
+    ctx.beginPath();
+    ctx.moveTo(g.x, g.y);
+    for(let a=-Math.PI/4; a<=Math.PI/4+0.001; a+=Math.PI/24){
+      const ang = g.face + a;
+      let rr = 230;
+      const steps = 20;
+      for(let s=1;s<=steps;s++){
+        const rx = g.x + Math.cos(ang)*(230*s/steps);
+        const ry = g.y + Math.sin(ang)*(230*s/steps);
+        const tx=(rx/T)|0, ty=(ry/T)|0;
+        if(!inb(tx,ty) || opaqueS(idx(tx,ty))){ rr = 230*s/steps; break; }
+      }
+      ctx.lineTo(g.x + Math.cos(ang)*rr, g.y + Math.sin(ang)*rr);
+    }
+    ctx.closePath(); ctx.fill();
+    ctx.globalAlpha = 1;
+    // lantern glow
+    if(g.lantern){
+      ctx.fillStyle = PAL.sodium; ctx.globalAlpha = 0.1;
+      ctx.beginPath(); ctx.arc(g.x, g.y, 4.2*T, 0, TAU); ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+    // body
+    const col = g.state==='alert' ? PAL.oxide : g.state==='patrol' ? PAL.chalk : PAL.sodium;
+    ctx.fillStyle = col;
+    ctx.beginPath(); ctx.arc(g.x, g.y, 9, 0, TAU); ctx.fill();
+    ctx.strokeStyle = PAL.void;
+    ctx.beginPath(); ctx.moveTo(g.x, g.y);
+    ctx.lineTo(g.x + Math.cos(g.face)*12, g.y + Math.sin(g.face)*12); ctx.stroke();
+    // suspicion pip
+    if(g.susp > 4){
+      ctx.fillStyle = PAL.void; ctx.fillRect(g.x-11, g.y-19, 22, 5);
+      ctx.fillStyle = g.susp>=85?PAL.oxide:g.susp>=55?PAL.sodium:PAL.chalk;
+      ctx.fillRect(g.x-10, g.y-18, 20*(g.susp/100), 3);
+    }
+  }
+}
+
+function renderPlayer(){
+  const p = player;
+  const tier = TIERS[p.tier];
+  const rad = p.tier===0 ? 6 : p.tier===1 ? 8 : 9;
+  if(p.layer===1){
+    ctx.fillStyle = PAL.sodium; ctx.globalAlpha = 0.08;
+    ctx.beginPath(); ctx.arc(p.x, p.y, 4.5*T, 0, TAU); ctx.fill(); ctx.globalAlpha = 1;
+  }
+  ctx.fillStyle = PAL.verd;
+  ctx.beginPath(); ctx.arc(p.x, p.y, rad, 0, TAU); ctx.fill();
+  ctx.strokeStyle = PAL.void;
+  ctx.beginPath(); ctx.moveTo(p.x, p.y);
+  ctx.lineTo(p.x + p.facing[0]*rad*1.4, p.y + p.facing[1]*rad*1.4); ctx.stroke();
+
+  if(action && action.total > 1){
+    const w = 36, t = clamp(action.t/action.total, 0, 1);
+    ctx.fillStyle = PAL.void; ctx.fillRect(p.x-w/2-1, p.y-24, w+2, 7);
+    ctx.fillStyle = PAL.verd; ctx.fillRect(p.x-w/2, p.y-23, w*t, 5);
+    ctx.fillStyle = PAL.chalk; ctx.font = '10px monospace'; ctx.textAlign = 'center';
+    ctx.fillText(action.label, p.x, p.y-28);
+  }
+}
+
+function renderFloaters(){
+  ctx.font = '12px monospace'; ctx.textAlign = 'center';
+  for(const f of floaters){
+    ctx.fillStyle = f.col;
+    ctx.globalAlpha = clamp(f.t/1.2, 0, 1);
+    ctx.fillText(f.text, f.x, f.y - (2.2-f.t)*12);
+  }
+  ctx.globalAlpha = 1;
+}
+
+// ---------- HUD ----------
+function renderHUD(){
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.fillStyle = PAL.void;
+  ctx.fillRect(0, VIEW_H, VIEW_W, CANVAS_H-VIEW_H);
+  ctx.strokeStyle = PAL.draft;
+  ctx.beginPath(); ctx.moveTo(0, VIEW_H+0.5); ctx.lineTo(VIEW_W, VIEW_H+0.5); ctx.stroke();
+
+  const y = VIEW_H + 25;
+  ctx.font = '13px monospace'; ctx.textAlign = 'left';
+
+  // speed tiers
+  for(let i=0;i<5;i++){
+    ctx.fillStyle = i===player.tier ? PAL.verd : PAL.draft;
+    ctx.fillRect(14 + i*12, y-12, 8, 14);
+  }
+  ctx.fillStyle = PAL.chalk;
+  ctx.fillText(TIERS[player.tier].name, 82, y);
+
+  // light gem
+  const V = playerV();
+  ctx.beginPath(); ctx.arc(190, y-5, 11, 0, TAU);
+  ctx.fillStyle = mix(PAL.void, PAL.chalk, clamp(V,0,1)); ctx.fill();
+  ctx.strokeStyle = guards.some(g=>g.susp>=55) ? PAL.oxide : PAL.draft;
+  ctx.lineWidth = 2; ctx.stroke(); ctx.lineWidth = 1;
+
+  // stamina
+  ctx.fillStyle = PAL.draft; ctx.fillRect(215, y-11, 90, 8);
+  ctx.fillStyle = player.stamina<20 ? PAL.oxide : PAL.verd;
+  ctx.fillRect(215, y-11, 90*player.stamina/100, 8);
+
+  // inventory
+  ctx.fillStyle = PAL.chalk;
+  let inv = `picks ${player.picks}   probes ${player.probes}   timber ${player.timbers}   spoil ${player.spoil}/${spoilCap()}`;
+  ctx.fillText(inv, 330, y);
+  ctx.fillStyle = PAL.sodium;
+  ctx.textAlign = 'right';
+  ctx.fillText(`${player.lootVal} coin`, VIEW_W-14, y);
+
+  // layer + span
+  ctx.textAlign = 'left';
+  if(player.layer===1){
+    ctx.fillStyle = PAL.draft;
+    ctx.fillText('BELOW', 705, y);
+    const r = tunnelRegion(playerCell());
+    if(sub[playerCell()].dug){
+      ctx.fillStyle = r.weight>=3 ? PAL.oxide : PAL.chalk;
+      ctx.fillText(`span ${r.weight}/3`, 760, y);
+    }
+  }
+
+  // message line
+  if(msgState.t > 0){
+    ctx.fillStyle = PAL.chalk;
+    ctx.globalAlpha = clamp(msgState.t, 0, 1);
+    ctx.textAlign = 'center';
+    ctx.font = '13px monospace';
+    ctx.fillText(msgState.text, VIEW_W/2, VIEW_H - 14);
+    ctx.globalAlpha = 1;
+  }
+}
+
+// ---------- lock overlay ----------
+function renderLock(){
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.fillStyle = PAL.void; ctx.globalAlpha = 0.75;
+  ctx.fillRect(0,0,VIEW_W,VIEW_H); ctx.globalAlpha = 1;
+
+  const cx = VIEW_W/2, cy = 300;
+  ctx.strokeStyle = PAL.draft; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(cx, cy, 110, Math.PI, TAU); ctx.stroke();
+
+  // pins
+  const n = lock.pins.length;
+  for(let i=0;i<n;i++){
+    const p = lock.pins[i];
+    ctx.fillStyle = p.set ? PAL.verd : i===lock.cur ? PAL.sodium : PAL.draft;
+    ctx.fillRect(cx - n*14 + i*28, cy - 190, 18, p.set ? 16 : 26);
+  }
+
+  // pick angle needle
+  const a = Math.PI + (lock.ang/90)*Math.PI;
+  ctx.strokeStyle = PAL.chalk; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(cx, cy);
+  ctx.lineTo(cx + Math.cos(a)*104, cy + Math.sin(a)*104); ctx.stroke();
+  ctx.lineWidth = 1;
+
+  // tension + feedback
+  const tension = !!keys[' '];
+  ctx.font = '13px monospace'; ctx.textAlign = 'center';
+  ctx.fillStyle = tension ? PAL.sodium : PAL.draft;
+  ctx.fillText(tension ? 'TENSION HELD' : 'hold SPACE for tension', cx, cy+40);
+  if(tension && lock.cur<lock.pins.length){
+    const pin = lock.pins[lock.cur];
+    const inArc = Math.abs(lock.ang - pin.c) < pin.w/2;
+    if(inArc){
+      ctx.fillStyle = PAL.verd;
+      ctx.fillText('…the pin is giving…', cx, cy+62);
+    } else if(lock.wrong > 0.5){
+      ctx.fillStyle = PAL.oxide;
+      ctx.fillText('wrong tension — the pins will drop', cx, cy+62);
+    }
+    if(lock.edge > 0.2){
+      ctx.fillStyle = PAL.oxide;
+      ctx.fillText('!! the pick is flexing !!', cx, cy+82);
+    }
+  }
+  ctx.fillStyle = PAL.draft;
+  ctx.fillText(`${lock.door.label} — pin ${Math.min(lock.cur+1, n)} of ${n}   ·   ESC to withdraw   ·   the night does not pause`, cx, cy+120);
+}
+
+// ---------- title / end ----------
+function renderTouchUI(){
+  if(!touch.used) return;
+  ctx.setTransform(1,0,0,1,0,0);
+  // joystick
+  if(touch.stick && mode === 'play' && !lock){
+    const st = touch.stick;
+    ctx.strokeStyle = PAL.chalk; ctx.globalAlpha = 0.22;
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(st.ox, st.oy, 74, 0, TAU); ctx.stroke();
+    // tier band ticks on the ring
+    ctx.globalAlpha = 0.14;
+    for(const f of [0.32, 0.52, 0.72, 0.90]){
+      ctx.beginPath(); ctx.arc(st.ox, st.oy, 74*f, 0, TAU); ctx.stroke();
+    }
+    ctx.globalAlpha = 0.4;
+    ctx.fillStyle = touch.tier >= 3 ? PAL.sodium : PAL.verd;
+    ctx.beginPath(); ctx.arc(st.kx, st.ky, 26, 0, TAU); ctx.fill();
+    ctx.globalAlpha = 1; ctx.lineWidth = 1;
+  }
+  // buttons
+  for(const b of touchButtons){
+    const held = [...touch.holds.values()].includes(b.k);
+    ctx.globalAlpha = held ? 0.5 : 0.24;
+    ctx.fillStyle = held ? PAL.verd : PAL.draft;
+    ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, TAU); ctx.fill();
+    ctx.globalAlpha = held ? 0.9 : 0.55;
+    ctx.strokeStyle = PAL.chalk; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, TAU); ctx.stroke();
+    ctx.fillStyle = PAL.chalk;
+    ctx.font = (b.big ? 'bold 15px' : 'bold 11px') + ' monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(b.label, b.x, b.y + 4);
+    ctx.globalAlpha = 1; ctx.lineWidth = 1;
+  }
+}
+
+function renderTitle(){
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.fillStyle = PAL.void; ctx.globalAlpha = 0.88;
+  ctx.fillRect(0,0,VIEW_W,CANVAS_H); ctx.globalAlpha = 1;
+  ctx.textAlign = 'center';
+  ctx.fillStyle = PAL.chalk;
+  ctx.font = 'bold 54px monospace';
+  ctx.fillText('S P O I L', VIEW_W/2, 120);
+  ctx.font = '14px monospace';
+  ctx.fillStyle = PAL.draft;
+  ctx.fillText('the dirt you dig out, and the goods you carry home', VIEW_W/2, 150);
+
+  ctx.fillStyle = PAL.chalk; ctx.font = '13px monospace'; ctx.textAlign = 'left';
+  const lines = [
+    'CONTRACT — the counting house on Ropewalk Street.',
+    'A strongbox sits in a carpeted strongroom. Three ways to it:',
+    '',
+    '   the LOCK        pick the front door, then the six-pin strongroom door',
+    '   the WINDOW      cut or break the glass on the east wall',
+    '   the GROUND      the old well drops into a sewer branch. Dig.',
+    '',
+    ...(isTouchDevice ? [
+    'LEFT THUMB   drag to move — a small tilt is a crawl, a full tilt is a run',
+    'ACT (hold)   interact / dig       PROBE · SHORE · UP · DUMP appear underground',
+    'SMASH        appears when you face a window     STOP  cancels what you\u2019re doing',
+    'LOCKS        hold TENSION with your right thumb, sweep the pick with your left',
+    ] : [
+    'WASD / arrows  move        mouse wheel or 1–5   speed (prone→run)',
+    'E  interact / dig (hold)   F  probe the earth    T  shore the tunnel',
+    'C  dig up through a weak floor                   G  dump spoil in the sewer',
+    'R  smash a window (loud)   ESC  stop what you\u2019re doing',
+    ]),
+    '',
+    'Sound floods through doors and vents — watch the red wash when you make noise.',
+    'Clay never falls. Loam counts one. Gravel counts double. Span over 3 collapses.',
+    'Take the box. Reach the lit exit, top-right of the street.',
+  ];
+  let y = 210;
+  for(const l of lines){ ctx.fillText(l, 170, y); y += 22; }
+  ctx.textAlign = 'center';
+  ctx.fillStyle = PAL.sodium; ctx.font = '16px monospace';
+  ctx.fillText(isTouchDevice ? '— tap to begin the night —' : '— press ENTER to begin the night —', VIEW_W/2, y+18);
+}
+
+function renderEnd(escaped){
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.fillStyle = PAL.void; ctx.globalAlpha = 0.85;
+  ctx.fillRect(0,0,VIEW_W,CANVAS_H); ctx.globalAlpha = 1;
+  ctx.textAlign = 'center';
+  if(!escaped){
+    ctx.fillStyle = PAL.oxide; ctx.font = 'bold 40px monospace';
+    ctx.fillText('TAKEN', VIEW_W/2, 200);
+    ctx.fillStyle = PAL.chalk; ctx.font = '14px monospace';
+    ctx.fillText(stats.cause || 'The night ends in irons.', VIEW_W/2, 240);
+    ctx.fillStyle = PAL.draft;
+    ctx.fillText(touch.used ? 'tap to run the job again' : 'press R to run the job again', VIEW_W/2, 290);
+    return;
+  }
+  ctx.fillStyle = PAL.verd; ctx.font = 'bold 40px monospace';
+  ctx.fillText('THE FENCE', VIEW_W/2, 140);
+  ctx.font = '14px monospace';
+  let mult = 1;
+  const rows = [];
+  rows.push([`take`, `${player.lootVal} coin`]);
+  if(stats.ghost){ mult *= 1.5; rows.push(['GHOST — no guard ever stirred', '×1.5']); }
+  rows.push(['BLOODLESS — no bodies', '×1.3']); mult *= 1.3;
+  const clean = !stats.snapped && !stats.glass && !stats.collapsed;
+  if(clean){ mult *= 1.25; rows.push(['CLEAN — no evidence left behind', '×1.25']); }
+  else {
+    const ev = [];
+    if(stats.snapped) ev.push('a snapped pick in a lock');
+    if(stats.glass) ev.push('broken glass');
+    if(stats.collapsed) ev.push('a caved-in tunnel');
+    rows.push([`evidence: ${ev.join(', ')}`, '—']);
+  }
+  const xp = Math.round((player.lootVal/10) * mult);
+  let y = 200;
+  ctx.fillStyle = PAL.chalk;
+  for(const [a,b] of rows){
+    ctx.textAlign = 'left'; ctx.fillText(a, 280, y);
+    ctx.textAlign = 'right'; ctx.fillText(b, 680, y);
+    y += 26;
+  }
+  y += 10;
+  ctx.textAlign = 'center';
+  ctx.fillStyle = PAL.sodium; ctx.font = 'bold 20px monospace';
+  ctx.fillText(`${xp} XP`, VIEW_W/2, y);
+  ctx.fillStyle = PAL.draft; ctx.font = '13px monospace';
+  ctx.fillText(`cells dug ${stats.dug} · locks picked ${stats.picked}${player.lootVal===0?' · you left empty-handed':''}`, VIEW_W/2, y+30);
+  ctx.fillText(touch.used ? 'tap for another night' : 'press R for another night', VIEW_W/2, y+70);
+}
+
+// ============================================================
+// Loop
+// ============================================================
+function step(dt){
+  gameT += dt;
+  if(shake>0) shake = Math.max(0, shake - dt*1.6);
+  for(const r of rings) r.t -= dt;
+  rings = rings.filter(r => r.t > 0);
+  for(const f of floaters) f.t -= dt;
+  floaters = floaters.filter(f => f.t > 0);
+  if(msgState.t > 0) msgState.t -= dt;
+
+  if(mode !== 'play'){ visNow = visNow || new Set(); return; }
+
+  holdChecks();
+  if(lock){
+    lockUpdate(dt);
+    updateAction(0);
+  } else {
+    playerUpdate(dt);
+  }
+  for(const g of guards) guardUpdate(g, dt);
+
+  // FOV + memory
+  const rad = player.layer===0 ? 13 : 5.5;
+  visNow = computeFOV(player.x/T, player.y/T, player.layer, rad);
+  const mem = player.layer===0 ? exploredS : exploredU;
+  for(const i of visNow) mem.add(i);
+}
+
+let last = 0, acc = 0;
+function frame(t){
+  const now = t/1000;
+  let dt = Math.min(0.25, now - last);
+  last = now;
+  acc += dt;
+  const h = 1/60;
+  while(acc >= h){ step(h); acc -= h; }
+  render();
+  requestAnimationFrame(frame);
+}
+
+// ============================================================
+// Boot
+// ============================================================
+function boot(){
+  canvas = document.getElementById('g');
+  ctx = canvas.getContext('2d');
+  resetRun();
+  mode = 'title';
+  visNow = new Set();
+
+  document.addEventListener('keydown', onKeyDown);
+  document.addEventListener('keyup', onKeyUp);
+  canvas.addEventListener('wheel', onWheel, { passive:false });
+  canvas.addEventListener('touchstart', onTouchStart, { passive:false });
+  canvas.addEventListener('touchmove', onTouchMove, { passive:false });
+  canvas.addEventListener('touchend', onTouchEnd, { passive:false });
+  canvas.addEventListener('touchcancel', onTouchEnd, { passive:false });
+  canvas.addEventListener('contextmenu', e => e.preventDefault && e.preventDefault());
+  canvas.addEventListener('mousemove', e => {
+    const r = canvas.getBoundingClientRect();
+    mouse.x = (e.clientX - r.left) * (VIEW_W / r.width);
+    mouse.y = (e.clientY - r.top) * (CANVAS_H / r.height);
+  });
+  canvas.addEventListener('mousedown', () => {
+    ac();
+    if(mode==='title') mode='play';
+    else if(mode==='caught'||mode==='escaped'){ resetRun(); mode='play'; }
+  });
+  requestAnimationFrame(frame);
+}
+
+if(typeof window !== 'undefined'){
+  window.SPOIL = {
+    boot, step, resetRun,
+    get player(){ return player; }, get guards(){ return guards; },
+    get mode(){ return mode; }, set mode(m){ mode = m; },
+    get sub(){ return sub; }, get surf(){ return surf; },
+    keys, emitSound, tryInteract, computeFOV, findPath, playerCell,
+    startAction: a => startAction(a), get action(){ return action; },
+    get stats(){ return stats; },
+    get lock(){ return lock; }, set lock(v){ lock = v; },
+    mouse, touch, onTouchStart, onTouchMove, onTouchEnd, buildTouchButtons,
+    get touchButtons(){ return touchButtons; },
+  };
+  if(typeof document !== 'undefined' && document.getElementById && document.getElementById('g')) boot();
+  else if(typeof document !== 'undefined' && document.addEventListener)
+    document.addEventListener('DOMContentLoaded', boot);
+}
+
+</script>
+</body>
+</html>

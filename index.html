@@ -435,7 +435,7 @@ function resetRun(){
     x: 3*T+T/2, y: (18-1)*T+T/2,     // on the street, left end (groundY-1 = 17)
     vx:0, vy:0, onGround:true, climbing:false, tier:2, dir:1,
     stamina:100, spoil:0, picks:3, probes:10, timbers:6, ropesLeft:3,
-    lootVal:0, stepT:0, breathT:0, lowT:0, coyote:0, walkPhase:0,
+    lootVal:0, stepT:0, breathT:0, lowT:0, coyote:0, walkPhase:0, prevH:TIERS[2].h,
   };
   exploredSet=new Set(); visSet=new Set();
   rings=[]; floaters=[]; shake=0; gameT=0;
@@ -474,6 +474,18 @@ function playerUpdate(dt){
   const busy = action && action.type!=='descend';
   if(busy){ ix=0; iy=0; }
   if(ix!==0) player.dir = ix;
+
+  // keep feet planted when the collision box changes height (crouch<->stand):
+  // grow/shrink about the feet, never push the box down through the floor.
+  const curH = TIERS[player.tier].h;
+  if(curH !== player.prevH){
+    player.y += (player.prevH - curH) * 0.5;   // feet (y + h/2) stay fixed
+    // if growing upward would bury the head in a ceiling, sink back to sit on the floor instead
+    const r=7, topY=player.y - curH*0.5;
+    for(const ox of [-r, r]){ const tx=((player.x+ox)/T)|0, ty=(topY/T)|0;
+      if(inb(tx,ty) && solid(idx(tx,ty))){ player.y = ty*T + T + curH*0.5 + 0.1; break; } }
+    player.prevH = curH;
+  }
 
   // stamina for running
   if(player.tier===3 && ix) player.stamina=clamp(player.stamina-12*dt,0,100);
@@ -1059,6 +1071,7 @@ function drawLoot(){ for(const l of loot){ if(l.taken) continue; const i=idx(l.x
 // Draws a person standing on (cx, feetY), facing dir, animated by phase.
 // pose: 'stand'|'walk'|'run'|'crouch'|'prone'|'climb'. cols = {skin, cloth, accent, line}
 function drawHuman(cx, feetY, dir, pose, phase, cols, L){
+  feetY -= 1;                            // seat rounded foot-caps on the floor line, not through it
   const sh = v=>shade(v, L);
   ctx.lineCap='round';
   const swing = Math.sin(phase);        // -1..1 gait

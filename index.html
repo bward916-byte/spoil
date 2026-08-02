@@ -22,12 +22,14 @@
   }
   canvas {
     image-rendering: pixelated;
+    image-rendering: crisp-edges;
     max-width: 100vw;
     max-height: 100vh;
     max-height: 100dvh;
-    aspect-ratio: 960 / 640;
+    aspect-ratio: 1152 / 576;
     outline: none;
     touch-action: none;
+    background: #0A0C11;
   }
   #rotate {
     display: none;
@@ -38,19 +40,19 @@
     font: 16px/1.7 monospace;
     padding: 0 24px;
   }
-  #rotate b { color: #E9A23B; }
+  #rotate b { color: #E9A23B; letter-spacing: 4px; }
   @media (orientation: portrait) and (pointer: coarse) {
     #rotate { display: flex; }
   }
 </style>
 </head>
 <body>
-<canvas id="g" width="960" height="640"></canvas>
-<div id="rotate"><div>&#8635;<br><b>S P O I L</b><br>turn your device sideways —<br>this job is worked in landscape</div></div>
+<canvas id="g" width="1152" height="576"></canvas>
+<div id="rotate"><div>&#8635;<br><b>S P O I L</b><br>turn your device sideways &mdash;<br>this job is worked in landscape</div></div>
 <script>
 // ============================================================
-// SPOIL — playable vertical slice (M0–M7)
-// Top-down stealth burglary. Canvas 2D, zero libraries.
+// SPOIL — side-view cut-through burglary. Canvas 2D, zero libs.
+// The house stands in cross-section; the earth below is yours to dig.
 // ============================================================
 
 const PAL = {
@@ -62,168 +64,272 @@ const PAL = {
   oxide: '#B8433A',
 };
 
-const W = 46, H = 34, T = 32, NC = W * H;
-const VIEW_W = 960, VIEW_H = 600, CANVAS_H = 640;
-const DIR4 = [[1,0],[-1,0],[0,1],[0,-1]];
+// world is a tile grid seen edge-on. y grows downward (sky -> roof -> floors -> earth -> bedrock).
+const W = 64, H = 44, T = 24, NC = W * H;
+const SCALE = 3;                       // 3x zoom: each tile is 72 device px — people read big
+const VW = 384, VH = 168;              // world viewport (16 x 7 tiles visible)
+const HUD_H = 72;                      // slim HUD so the short landscape view keeps its height
+const CW = VW * SCALE, CH = VH * SCALE + HUD_H; // canvas: 1152 x 576 (fills a landscape phone, ~2:1)
 const TAU = Math.PI * 2;
+const DIR4 = [[1,0],[-1,0],[0,1],[0,-1]];
 
-const idx = (x, y) => y * W + x;
-const inb = (x, y) => x >= 0 && y >= 0 && x < W && y < H;
-const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
-const dist2 = (ax, ay, bx, by) => { const dx = ax - bx, dy = ay - by; return dx*dx + dy*dy; };
+const idx = (x,y) => y*W + x;
+const inb = (x,y) => x>=0 && y>=0 && x<W && y<H;
+const clamp = (v,a,b) => v<a?a:v>b?b:v;
+const lerp = (a,b,t) => a+(b-a)*t;
+const sign = v => v<0?-1:v>0?1:0;
 
-function hexRGB(h){ return [parseInt(h.slice(1,3),16), parseInt(h.slice(3,5),16), parseInt(h.slice(5,7),16)]; }
-function mix(h1, h2, t){
-  const a = hexRGB(h1), b = hexRGB(h2); t = clamp(t, 0, 1);
-  return `rgb(${(a[0]+(b[0]-a[0])*t)|0},${(a[1]+(b[1]-a[1])*t)|0},${(a[2]+(b[2]-a[2])*t)|0})`;
-}
+function hexRGB(h){ return [parseInt(h.slice(1,3),16),parseInt(h.slice(3,5),16),parseInt(h.slice(5,7),16)]; }
+function mix(h1,h2,t){ const a=hexRGB(h1),b=hexRGB(h2); t=clamp(t,0,1);
+  return `rgb(${(a[0]+(b[0]-a[0])*t)|0},${(a[1]+(b[1]-a[1])*t)|0},${(a[2]+(b[2]-a[2])*t)|0})`; }
 
-// ---------- surfaces ----------
-const SURF = {
-  '.': { walk:1, mult:1.0, name:'wood' },
-  ',': { walk:1, mult:1.2, name:'cobbles' },
-  '~': { walk:1, mult:0.4, name:'soil' },
-  'g': { walk:1, mult:1.9, name:'gravel' },
-  'c': { walk:1, mult:0.4, name:'carpet' },
-  't': { walk:1, mult:1.2, name:'tile' },
-  'H': { walk:1, mult:0.4, name:'well' },
-  'X': { walk:1, mult:1.2, name:'street' },
-  '#': { walk:0, mult:1.0, name:'wall' },
-  'W': { walk:0, mult:1.0, name:'window' },
-};
+// ---------- tile kinds ----------
+// Each cell has: k (kind char), plus dig state for earth.
+// AIR ' '  passable open air (rooms, sky, dug tunnels)
+// SOLID '#' brick wall / bedrock border — impassable, opaque, blocks sound hard
+// FLOOR '=' a walkable floor slab (solid to stand on, blocks vertical movement & sight down)
+// WEAK 'w'  a floorboard you can dig UP through from below / pry from above
+// LADDER 'H' climbable (interior stair/ladder)
+// ROPE 'r'  climbable rope you deploy or that hangs in a shaft
+// DOOR 'D'  handled via doors map (locked/pins)
+// WINDOW 'N' glass — see through, cut or smash to pass
+// EARTH materials (dig grid): L C R G U B  (loam clay root gravel rubble footing)
+// BEDROCK 'K' undiggable
+// SEWER 'S' open void underground (free move, dump spoil)
+// LAMP posts handled separately
 
-// ---------- subsurface materials ----------
 const MAT = {
-  L: { t:2,  n:1, wt:1, name:'loam',          dig:1 },
-  C: { t:4,  n:1, wt:0, name:'clay',          dig:1 },
-  R: { t:6,  n:0, wt:0, name:'root mass',     dig:1 },
-  G: { t:5,  n:3, wt:2, name:'gravel fill',   dig:1 },
-  U: { t:6,  n:4, wt:2, name:'rubble',        dig:1 },
-  B: { t:11, n:6, wt:1, name:'brick footing', dig:1 },
-  K: { t:0,  n:0, wt:0, name:'bedrock',       dig:0 },
-  S: { t:0,  n:0, wt:0, name:'sewer void',    dig:0 },
+  L: { t:1.6, n:1, wt:1, name:'loam',          col:'#3a2f24' },
+  C: { t:3.4, n:1, wt:0, name:'clay',          col:'#4a3a48' },
+  R: { t:5.0, n:0, wt:0, name:'root mass',     col:'#2c3a2c' },
+  G: { t:4.2, n:3, wt:2, name:'gravel',        col:'#4a4640' },
+  U: { t:5.0, n:4, wt:2, name:'rubble',        col:'#3f3a34' },
+  B: { t:9.0, n:6, wt:1, name:'brick footing', col:'#5a3630' },
 };
+const isEarth = k => MAT[k] !== undefined;
 
+// ---------- movement tiers (horizontal) ----------
+// loudness base per footfall; stance affects how visible you are; height = collision box.
 const TIERS = [
-  { name:'PRONE',  spd:14,  base:0,  int:0,    stance:0.35 },
-  { name:'CROUCH', spd:24,  base:1,  int:1.4,  stance:0.60 },
-  { name:'CREEP',  spd:46,  base:3,  int:0.9,  stance:1.00 },
-  { name:'WALK',   spd:86,  base:7,  int:0.55, stance:1.00 },
-  { name:'RUN',    spd:152, base:16, int:0.32, stance:1.00 },
+  { name:'PRONE',  spd:26,  base:0, int:0,    stance:0.35, h:9  },
+  { name:'CROUCH', spd:44,  base:1, int:0.55, stance:0.60, h:14 },
+  { name:'WALK',   spd:96,  base:6, int:0.42, stance:1.00, h:20 },
+  { name:'RUN',    spd:172, base:16,int:0.28, stance:1.15, h:20 },
 ];
+
+// surface loudness by what you're standing on
+const FLOOR_MULT = { '=':1.0, 'w':1.2, 'street':1.2, 'carpet':0.4, 'tile':1.3 };
 
 // ============================================================
 // Level state
 // ============================================================
-let surf, sub, doors, openWin, weakSet, holes, lamps, loot, guards, lightmap;
-let exploredS, exploredU, visNow;
-let player, mode, msgState, floaters, rings, shake, stats, camX, camY, gameT;
-let lock, action, glassCells;
+let grid;              // Uint8-ish: we store chars in a normal array for clarity
+let mat;              // earth material per cell (only meaningful where grid==='E')
+let dug;             // bool per cell: earth that's been excavated (now air, but tracked for collapse)
+let shored;          // bool per cell
+let probed;          // bool per cell
+let floorType;       // per-floor surface tag for loudness (carpet/tile) keyed by cell
+let doors;           // Map cell -> {open,locked,pins,label,x,y}
+let openWin, glass;  // Sets of window cells opened / smashed
+let ropes;           // Set of cells with a deployed/there rope
+let lamps, loot, guards, lightmap;
+let exploredSet, visSet;
+let player, mode, msgState, floaters, rings, shake, stats, cam, gameT;
+let lock, action;
 
-function rect(x0,y0,x1,y1,ch){ for(let y=y0;y<=y1;y++) for(let x=x0;x<=x1;x++) surf[idx(x,y)]=ch; }
-function outline(x0,y0,x1,y1,ch){
-  for(let x=x0;x<=x1;x++){ surf[idx(x,y0)]=ch; surf[idx(x,y1)]=ch; }
-  for(let y=y0;y<=y1;y++){ surf[idx(x0,y)]=ch; surf[idx(x1,y)]=ch; }
-}
+function fill(x0,y0,x1,y1,ch){ for(let y=y0;y<=y1;y++) for(let x=x0;x<=x1;x++) if(inb(x,y)) grid[idx(x,y)]=ch; }
+function hline(x0,x1,y,ch){ for(let x=x0;x<=x1;x++) if(inb(x,y)) grid[idx(x,y)]=ch; }
+function vline(x,y0,y1,ch){ for(let y=y0;y<=y1;y++) if(inb(x,y)) grid[idx(x,y)]=ch; }
 
 function genLevel(){
-  surf = new Array(NC).fill('~');
-  doors = new Map(); openWin = new Set(); weakSet = new Set(); holes = new Set();
-  glassCells = new Set();
+  grid = new Array(NC).fill(' ');
+  mat = new Array(NC).fill('L');
+  dug = new Array(NC).fill(false);
+  shored = new Array(NC).fill(false);
+  probed = new Array(NC).fill(false);
+  floorType = new Array(NC).fill('=');
+  doors = new Map(); openWin = new Set(); glass = new Set(); ropes = new Set();
 
-  outline(0,0,W-1,H-1,'#');
-  rect(1,1,44,3,',');                       // top street
-  for(let y=1;y<=3;y++){ surf[idx(43,y)]='X'; surf[idx(44,y)]='X'; }  // exit zone
-  rect(14,4,14,5,'g');                      // gravel path to front door
+  // ---- vertical layout ----
+  // y 0..3 sky, y4 street level (ground surface), building y5..? , earth below groundY
+  const groundY = 18;         // the street/topsoil line
+  // sky is air. bedrock frame:
+  hline(0, W-1, H-1, '#');
+  vline(0, 0, H-1, '#'); vline(W-1, 0, H-1, '#');
 
-  // building shell
-  outline(9,6,36,25,'#');
-  rect(10,7,35,24,'.');
-  rect(21,7,35,14,'t');                     // hall: tile floor
-  // spine walls
-  for(let y=6;y<=25;y++) surf[idx(20,y)]='#';
-  for(let x=9;x<=36;x++) surf[idx(x,15)]='#';
-  for(let y=15;y<=25;y++) surf[idx(28,y)]='#';
-  rect(29,16,35,24,'c');                    // strongroom carpet
+  // ---- the street ----
+  hline(1, W-2, groundY, '='); for(let x=1;x<=W-2;x++) floorType[idx(x,groundY)]='street';
+  // exit: lit alley mouth on the right at street level
+  for(let y=groundY-3; y<groundY; y++){ grid[idx(W-3,y)]=' '; grid[idx(W-2,y)]='X'; }
+  grid[idx(W-2,groundY-1)]='X'; grid[idx(W-3,groundY-1)]='X';
 
-  // doors: [x, y, locked, pins, label]
+  // ---- the counting house: x 8..40, three storeys above street + a cellar below ----
+  const bx0=8, bx1=40;
+  const roofY = 5, s1=8, s2=12, s3=16; // floor slab rows for storey ceilings/floors
+  // outer shell walls
+  vline(bx0, roofY, groundY, '#'); vline(bx1, roofY, groundY, '#');
+  hline(bx0, bx1, roofY, '#');                       // roof
+  // storey floors (walkable slabs)
+  for(const fy of [s1, s2, s3, groundY]) hline(bx0+1, bx1-1, fy, '=');
+  // rooms get names/surfaces: top floor carpeted study, mid tiled hall, ground counting room
+  for(let x=bx0+1;x<=bx1-1;x++){ floorType[idx(x,s1)]='carpet'; floorType[idx(x,s2)]='tile'; }
+
+  // interior partition walls (with door gaps)
+  vline(24, roofY+1, s1-1, '#'); grid[idx(24,roofY+2)]=' ';  // attic split
+  vline(20, s1+1, s2-1, '#');    // upper landing wall
+  vline(30, s1+1, s2-1, '#');
+  vline(28, s2+1, s3-1, '#');    // mid wall
+  vline(16, s2+1, s3-1, '#');
+  vline(32, s3+1, groundY-1, '#'); // strongroom wall on ground floor (right side)
+
+  // ---- ladders / internal stairs connecting storeys ----
+  // a service ladder shaft on the left interior (x=12) from ground up to attic
+  for(let y=roofY+1; y<groundY; y++) if(grid[idx(12,y)]===' '||grid[idx(12,y)]==='=') grid[idx(12,y)]='H';
+  // punch through the slabs where the ladder passes
+  for(const fy of [s1,s2,s3]) grid[idx(12,fy)]='H';
+  // a short stair on the right from ground to mid (x=36)
+  for(let y=s2+1; y<groundY; y++) grid[idx(36,y)]='H';
+  grid[idx(36,s3)]='H';
+
+  // ---- doors ----
   const dspec = [
-    [14,6, 1,4,'front door'],
-    [14,15,0,0,'door'],
-    [24,15,0,0,'hall door'],
-    [20,10,0,0,'door'],
-    [20,20,0,0,'door'],
-    [28,20,1,6,'strongroom door'],
+    [bx0, groundY-1, 1, 4, 'front door'],     // street entrance, left wall, locked
+    [24, groundY-1, 0, 0, 'counting-room door'],
+    [32, groundY-2, 1, 6, 'strongroom door'], // guards the vault on ground floor right
+    [20, s2-1, 0, 0, 'landing door'],
+    [28, s3-1, 0, 0, 'hall door'],
   ];
   for(const [x,y,lk,p,label] of dspec){
-    surf[idx(x,y)]='.';
+    grid[idx(x,y)] = 'D';
     doors.set(idx(x,y), { open:false, locked:!!lk, pins:p, label, x, y });
   }
 
-  // windows
-  surf[idx(36,11)]='W';
-  surf[idx(9,20)]='W';
+  // ---- windows ----
+  grid[idx(bx1, s2+1)] = 'N';    // right wall, mid storey
+  grid[idx(bx0, s1+2)] = 'N';    // left wall, top storey
+  openWin = new Set(); glass = new Set();
 
-  // well + weak floor in strongroom
-  surf[idx(5,29)]='H';
-  for(const [x,y] of [[31,22],[32,22],[31,23],[32,23]]) weakSet.add(idx(x,y));
+  // ---- weak floorboards (dig up targets): under the strongroom ----
+  // strongroom is ground floor right of x=32; its floor is groundY
+  for(const x of [34,35,36,37]) grid[idx(x,groundY)] = 'w';
 
-  // lamps: x,y in tiles, radius in tiles
-  lamps = [
-    { x:12.5, y:2.5, r:6.5 }, { x:28.5, y:2.5, r:6.5 }, { x:40.5, y:2.5, r:6.5 },
-    { x:28.5, y:10.5, r:5.5 }, { x:13.5, y:10.5, r:5 }, { x:24.5, y:20.5, r:4.5 },
-  ];
-
+  // ---- loot ----
   loot = [
-    { x:12, y:9,  val:120,  type:'coin', taken:false },
-    { x:26, y:8,  val:120,  type:'coin', taken:false },
-    { x:17, y:20, val:120,  type:'coin', taken:false },
-    { x:33, y:18, val:1500, type:'box',  taken:false },
+    { x:14, y:s1-1, val:150, type:'coin', taken:false },   // attic purse
+    { x:26, y:s2-1, val:150, type:'coin', taken:false },   // mid hall
+    { x:18, y:groundY-1, val:150, type:'coin', taken:false },
+    { x:37, y:groundY-1, val:2000, type:'box', taken:false }, // the strongbox, in the vault
   ];
 
+  // ---- lamps (x,y tile centers, radius tiles) ----
+  lamps = [
+    { x:4.5,  y:groundY-1.5, r:6 },
+    { x:W-6.5,y:groundY-1.5, r:6 },   // near the exit
+    { x:26,   y:groundY-1.5, r:5 },   // street lamp in front of the house
+    { x:14,   y:s2-1.5,      r:4.5 }, // interior mid
+    { x:35,   y:groundY-1.5, r:4 },   // vault sconce — lights the strongbox
+  ];
+
+  // ---- guards patrolling floors (side-view: they walk a storey, can take ladders) ----
   guards = [
-    mkGuard('street', [[11,2],[40,2]], true),
-    mkGuard('hall',   [[22,8],[34,8],[34,13],[22,13]], false),
-    mkGuard('cellar', [[22,17],[27,17],[27,23],[22,23]], false),
+    mkGuard('street', [[10,groundY-1],[W-8,groundY-1]], true, groundY-1),
+    mkGuard('ground', [[bx0+2,groundY-1],[30,groundY-1]], false, groundY-1),
+    mkGuard('mid',    [[bx0+2,s2-1],[bx1-2,s2-1]], true, s2-1),
   ];
 
-  // ---------- subsurface ----------
-  sub = new Array(NC);
-  for(let i=0;i<NC;i++) sub[i] = { mat:'L', dug:false, shored:false, probed:false };
-  for(let y=0;y<H;y++) for(let x=0;x<W;x++){
-    if(x<2||y<2||x>W-3||y>=31) sub[idx(x,y)].mat='K';
-  }
-  // rock blobs
-  for(const [x0,y0,x1,y1] of [[20,28,23,30],[36,26,39,28],[2,8,7,14],[40,18,43,24]])
-    for(let y=y0;y<=y1;y++) for(let x=x0;x<=x1;x++) if(inb(x,y)) sub[idx(x,y)].mat='K';
-  // gravel pocket + roots near well
-  for(let y=27;y<=30;y++) for(let x=11;x<=16;x++) if(sub[idx(x,y)].mat==='L') sub[idx(x,y)].mat='G';
-  for(let y=23;y<=25;y++) for(let x=3;x<=8;x++)  if(sub[idx(x,y)].mat==='L') sub[idx(x,y)].mat='R';
-  // footings under building perimeter, clay ring around them
-  const footing=[];
-  for(let x=9;x<=36;x++){ footing.push([x,6],[x,25]); }
-  for(let y=6;y<=25;y++){ footing.push([9,y],[36,y]); }
-  for(const [x,y] of footing) sub[idx(x,y)].mat='B';
-  for(const [x,y] of footing) for(const [dx,dy] of DIR4){
-    const nx=x+dx, ny=y+dy;
-    if(inb(nx,ny) && sub[idx(nx,ny)].mat==='L') sub[idx(nx,ny)].mat='C';
-  }
-  // sewer branch from the well
-  const sewer = [[5,29],[5,28],[5,27],[6,27],[7,27],[8,27],[9,27],[10,27],[11,27],[12,27]];
-  for(const [x,y] of sewer) sub[idx(x,y)].mat='S';
+  // ---- earth below groundY ----
+  genEarth(groundY, bx0, bx1);
 
   bakeLight();
 }
 
-function mkGuard(id, wps, lantern){
-  return {
-    id, wps, wp:0, lantern,
-    x:wps[0][0]*T+16, y:wps[0][1]*T+16,
-    face:0, susp:0, floor:0, aware:1,
-    state:'patrol', path:null, pi:0,
-    lastKnown:null, lastSeen:-99, sweepT:0, holdT:0, said:'',
-    shouted:false, repathT:0, arriveNoSeeT:0,
-  };
+function genEarth(groundY, bx0, bx1){
+  // everything below the street slab is earth 'E' with a material, except bedrock frame.
+  for(let y=groundY+1; y<H-1; y++) for(let x=1; x<W-1; x++){
+    grid[idx(x,y)] = 'E';
+    mat[idx(x,y)] = 'L';
+  }
+  // bedrock shelf near the bottom + scattered boulders
+  for(let y=H-4; y<H-1; y++) for(let x=1;x<W-1;x++){ mat[idx(x,y)]='K'; }
+  for(const [x0,y0,x1,y1] of [[18,H-8,22,H-5],[44,H-9,49,H-6],[3,groundY+6,7,groundY+10]])
+    for(let y=y0;y<=y1;y++) for(let x=x0;x<=x1;x++) if(inb(x,y)&&grid[idx(x,y)]==='E') mat[idx(x,y)]='K';
+  // 'K' cells are marked as bedrock via material; render/logic treat mat K as undiggable earth.
+  for(let i=0;i<NC;i++) if(grid[i]==='E' && mat[i]==='K') grid[i]='K';
+
+  // footings directly under the house walls + a clay skirt (the safe route hugs it)
+  for(let y=groundY+1; y<=groundY+2; y++){ if(inb(bx0,y)) setMat(bx0,y,'B'); if(inb(bx1,y)) setMat(bx1,y,'B'); }
+  hline(bx0, bx1, groundY+1, 'E');            // ensure diggable band right under the slab
+  for(let x=bx0;x<=bx1;x++){ if(mat[idx(x,groundY+1)]!=='B') setMat(x,groundY+1,'C'); } // clay skirt under the whole footprint
+  // gravel pocket + roots to punish blind digging
+  for(let y=groundY+3; y<=groundY+6; y++) for(let x=26;x<=33;x++) if(diggable(x,y)) setMat(x,y,'G');
+  for(let y=groundY+2; y<=groundY+4; y++) for(let x=44;x<=50;x++) if(diggable(x,y)) setMat(x,y,'R');
+
+  // ---- the sewer: an open horizontal main a few tiles down, reached by a street grate ----
+  const sewerY = groundY + 8;
+  // sewerY-1 is open void (headroom), sewerY is a walkable channel floor
+  for(let x=6; x<=W-6; x++){ grid[idx(x,sewerY-1)]='S'; mat[idx(x,sewerY-1)]='S'; grid[idx(x,sewerY)]='='; floorType[idx(x,sewerY)]='street'; }
+  // grate shaft from the street down into the sewer (x=5), with a rope already hanging into the void
+  for(let y=groundY+1; y<=sewerY-1; y++){ grid[idx(5,y)]='S'; mat[idx(5,y)]='S'; ropes.add(idx(5,y)); }
+  grid[idx(5,sewerY)]='='; floorType[idx(5,sewerY)]='street'; // landing at the shaft foot
+  grid[idx(5,groundY)] = 'G_';   // grate on the street (special tile) -> we treat via specialGrate
+  window.__grate = idx(5,groundY);
+  // make the grate a walkable floor you can open/descend
+  grid[idx(5,groundY)] = '=';
+  floorType[idx(5,groundY)] = 'grate';
+}
+
+function setMat(x,y,m){ if(inb(x,y)&&grid[idx(x,y)]!=='#'){ grid[idx(x,y)]='E'; mat[idx(x,y)]=m; if(m==='K') grid[idx(x,y)]='K'; } }
+function diggable(x,y){ return inb(x,y) && grid[idx(x,y)]==='E' && mat[idx(x,y)]!=='K'; }
+
+function mkGuard(id, wps, lantern, lane){
+  const [sx,sy] = wps[0];
+  return { id, wps, wp:0, lantern, lane,
+    x:sx*T+T/2, y:sy*T+T/2, dir:1, face:1,
+    susp:0, floor:0, aware:1, state:'patrol',
+    lastKnown:null, lastSeen:-99, holdT:0, sweepT:0, shouted:false,
+    targetX:null, climbing:false, walkPhase:Math.random()*TAU };
+}
+
+// ============================================================
+// Geometry: solidity, climb, sight, light
+// ============================================================
+function solid(i){                     // blocks movement as a wall/floor slab
+  const k = grid[i];
+  if(k==='#'||k==='K') return true;
+  if(k==='=') return true;             // floor slab (special-cased for one-way in physics)
+  if(k==='w') return true;             // weak board still a floor until dug
+  if(k==='E') return !dug[i];          // undug earth is solid
+  if(k==='D'){ const d=doors.get(i); return !(d&&d.open); }
+  if(k==='N') return !openWin.has(i) && !glass.has(i);
+  return false;
+}
+function opaque(i){
+  const k = grid[i];
+  if(k==='#'||k==='K') return true;
+  if(k==='=') return true;             // can't see through a floor slab
+  if(k==='w') return true;
+  if(k==='E') return !dug[i];
+  if(k==='D'){ const d=doors.get(i); return !(d&&d.open); }
+  return false;                        // windows, ladders, ropes, sewer: see-through
+}
+function climbable(i){
+  const k = grid[i];
+  return k==='H' || (k==='r') || ropes.has(i) || k==='S';
+}
+function passableForFall(i){           // can a body occupy this cell (not solid)?
+  return !solid(i);
+}
+
+// tile LOS
+function los(x0,y0,x1,y1){
+  const d = Math.hypot(x1-x0,y1-y0);
+  const steps = Math.max(1, Math.ceil(d/0.4));
+  for(let s=1;s<steps;s++){
+    const t=s/steps, x=(x0+(x1-x0)*t)|0, y=(y0+(y1-y0)*t)|0;
+    if(!inb(x,y)) return false;
+    if(opaque(idx(x,y))) return false;
+  }
+  return true;
 }
 
 function bakeLight(){
@@ -234,193 +340,91 @@ function bakeLight(){
       for(let x=Math.max(0,(lm.x-r)|0); x<=Math.min(W-1,(lm.x+r)|0); x++){
         const d = Math.hypot(x+0.5-lm.x, y+0.5-lm.y);
         if(d>r) continue;
-        if(!losTiles(lm.x, lm.y, x+0.5, y+0.5)) continue;
-        const v = 1 - d/r;
-        const i = idx(x,y);
-        if(v > lightmap[i]) lightmap[i] = v;
+        if(!los(lm.x,lm.y,x+0.5,y+0.5)) continue;
+        const v = (1-d/r); const i=idx(x,y);
+        if(v>lightmap[i]) lightmap[i]=v;
       }
   }
 }
-
-// ============================================================
-// Geometry / vision
-// ============================================================
-function opaqueS(i){
-  const ch = surf[i];
-  if(ch==='#') return true;
-  const d = doors.get(i);
-  if(d && !d.open) return true;
-  return false;                    // windows are glass: see through
-}
-function opaqueU(i){ const c = sub[i]; return !(c.dug || c.mat==='S'); }
-function opaque(layer, i){ return layer===0 ? opaqueS(i) : opaqueU(i); }
-
-function walkS(i){
-  const ch = surf[i];
-  if(ch==='#') return false;
-  if(ch==='W') return openWin.has(i);
-  const d = doors.get(i);
-  if(d && !d.open) return false;
-  return true;
-}
-function walkU(i){ const c = sub[i]; return c.dug || c.mat==='S'; }
-function walk(layer, i){ return layer===0 ? walkS(i) : walkU(i); }
-
-// tile-space LOS (used for light bake + guard sight)
-function losTiles(x0,y0,x1,y1, layer=0){
-  const d = Math.hypot(x1-x0, y1-y0);
-  const steps = Math.max(1, Math.ceil(d/0.33));
-  for(let s=1; s<steps; s++){
-    const t = s/steps;
-    const x = (x0+(x1-x0)*t)|0, y = (y0+(y1-y0)*t)|0;
-    if(!inb(x,y)) return false;
-    if(opaque(layer, idx(x,y))) return false;
-  }
-  return true;
-}
-
-function computeFOV(px, py, layer, radius){
-  const vis = new Set();
-  vis.add(idx(px|0, py|0));
-  for(let a=0; a<360; a+=2){
-    const dx = Math.cos(a*Math.PI/180)*0.45, dy = Math.sin(a*Math.PI/180)*0.45;
-    let fx=px, fy=py;
-    for(let s=0; s<radius/0.45; s++){
-      fx+=dx; fy+=dy;
-      const tx=fx|0, ty=fy|0;
-      if(!inb(tx,ty)) break;
-      const i = idx(tx,ty);
-      vis.add(i);
-      if(opaque(layer,i)) break;
-    }
-  }
-  return vis;
-}
-
-function lightAtPx(px, py){
-  const tx = clamp((px/T)|0, 0, W-1), ty = clamp((py/T)|0, 0, H-1);
+function lightAtPx(px,py){
+  const tx=clamp((px/T)|0,0,W-1), ty=clamp((py/T)|0,0,H-1);
   let v = lightmap[idx(tx,ty)];
   for(const g of guards){
     if(!g.lantern) continue;
-    const d = Math.hypot(px-g.x, py-g.y)/T;
-    if(d < 4.5 && losTiles(g.x/T, g.y/T, px/T, py/T)) v = Math.max(v, (1-d/4.5)*0.95);
+    const d = Math.hypot(px-g.x,py-g.y)/T;
+    if(d<4.5 && los(g.x/T,g.y/T,px/T,py/T)) v=Math.max(v,(1-d/4.5)*0.95);
   }
-  return clamp(v, 0.04, 1);
-}
-
-function playerV(){
-  if(player.layer!==0) return 0;
-  const tier = TIERS[player.tier];
-  const speed = Math.hypot(player.vx, player.vy);
-  const motion = speed<4 ? 0.55 : player.tier<=2 ? 0.8 : player.tier===3 ? 1.0 : 1.35;
-  return clamp(lightAtPx(player.x, player.y) * tier.stance * motion, 0, 1.3);
+  return clamp(v,0.03,1);
 }
 
 // ============================================================
-// Sound propagation (flood with edge costs, both layers)
+// Sound propagation (BFS flood, edge costs)
 // ============================================================
-function soundStepCost(layer, ni){
-  if(layer===0){
-    const ch = surf[ni];
-    if(ch==='#') return -1;
-    if(ch==='W') return openWin.has(ni) ? 3 : 13;
-    const d = doors.get(ni);
-    if(d) return d.open ? 1 : 11;
-    return 0;
-  } else {
-    const c = sub[ni];
-    if(c.mat==='K') return -1;
-    if(c.dug || c.mat==='S') return 0;
-    return 9;                      // through packed earth: heavily muffled
-  }
+function soundCost(ni){
+  const k = grid[ni];
+  if(k==='#'||k==='K') return -1;
+  if(k==='E') return dug[ni] ? 0 : 7;      // packed earth muffles hard
+  if(k==='='||k==='w') return dug[ni]?0:6; // through a floor slab
+  if(k==='D'){ const d=doors.get(ni); return d&&d.open?1:11; }
+  if(k==='N') return (openWin.has(ni)||glass.has(ni))?2:12;
+  return 0;                                 // air, ladder, rope, sewer, street
 }
-
-function emitSound(layer, cx, cy, L, opts={}){
+function emitSound(cx,cy,L,opts={}){
   if(L<=0) return;
-  const best = [new Float32Array(NC).fill(-1), new Float32Array(NC).fill(-1)];
-  const si = idx(clamp(cx,0,W-1), clamp(cy,0,H-1));
-  best[layer][si] = L;
-  const q = [[layer, si]];
+  const best = new Float32Array(NC).fill(-1);
+  const si = idx(clamp(cx,0,W-1),clamp(cy,0,H-1));
+  best[si]=L; const q=[si];
   while(q.length){
-    const [ly, i] = q.shift();
-    const Lh = best[ly][i];
-    if(Lh<=0) continue;
+    const i=q.shift(); const Lh=best[i]; if(Lh<=0) continue;
     const x=i%W, y=(i/W)|0;
     for(const [dx,dy] of DIR4){
-      const nx=x+dx, ny=y+dy;
-      if(!inb(nx,ny)) continue;
-      const ni = idx(nx,ny);
-      const ec = soundStepCost(ly, ni);
-      if(ec<0) continue;
-      const nl = Lh - 1 - ec;
-      if(nl > best[ly][ni]){ best[ly][ni] = nl; q.push([ly, ni]); }
+      const nx=x+dx, ny=y+dy; if(!inb(nx,ny)) continue;
+      const ni=idx(nx,ny); const ec=soundCost(ni); if(ec<0) continue;
+      const nl=Lh-1-ec; if(nl>best[ni]){ best[ni]=nl; q.push(ni); }
     }
-    const oly = 1-ly;
-    const vcost = (holes.has(i) || surf[i]==='H') ? 3 : 5;
-    const vl = Lh - vcost;
-    if(vl > best[oly][i]){ best[oly][i] = vl; q.push([oly, i]); }
   }
-
-  // guards hear (surface only)
   if(!opts.silentToGuards){
     for(const g of guards){
-      const gi = idx((g.x/T)|0, (g.y/T)|0);
-      const heard = best[0][gi];
-      const thr = 4;
-      if(heard > thr){
-        g.lastKnown = { x:cx*T+16, y:cy*T+16 };
-        g.susp = clamp(g.susp + (heard-thr)*7*g.aware, g.floor, 100);
-        if(heard >= 18) g.susp = Math.max(g.susp, 86);
-        if(g.susp>=25) stats.ghost = false;
+      const gi=idx((g.x/T)|0,(g.y/T)|0); const heard=best[gi]; const thr=4;
+      if(heard>thr){
+        g.lastKnown={x:cx*T+T/2,y:cy*T+T/2};
+        g.susp=clamp(g.susp+(heard-thr)*7*g.aware, g.floor, 100);
+        if(heard>=18) g.susp=Math.max(g.susp,86);
+        if(g.susp>=25) stats.ghost=false;
       }
     }
   }
-  // noise ring on the emitting layer
-  const cells = [];
-  const arr = best[layer];
-  for(let i=0;i<NC;i++) if(arr[i]>0) cells.push([i, arr[i]]);
-  rings.push({ layer, cells, t:1.0, max:L });
+  const cells=[]; for(let i=0;i<NC;i++) if(best[i]>0) cells.push([i,best[i]]);
+  rings.push({ cells, t:0.9, max:L });
 }
 
 // ============================================================
-// Guard pathing
+// Audio (procedural)
 // ============================================================
-function guardPassable(i){
-  const ch = surf[i];
-  if(ch==='#') return false;
-  if(ch==='W') return openWin.has(i);
-  const d = doors.get(i);
-  if(d && d.locked && !d.open) return false;
-  return true;
-}
-
-function findPath(sx, sy, tx, ty){
-  const si = idx(sx,sy), ti = idx(tx,ty);
-  if(si===ti) return [];
-  const prev = new Int32Array(NC).fill(-2);
-  prev[si] = -1;
-  const q = [si];
-  let bestReach = si, bestD = Math.abs(sx-tx)+Math.abs(sy-ty);
-  while(q.length){
-    const i = q.shift();
-    if(i===ti) break;
-    const x=i%W, y=(i/W)|0;
-    for(const [dx,dy] of DIR4){
-      const nx=x+dx, ny=y+dy;
-      if(!inb(nx,ny)) continue;
-      const ni = idx(nx,ny);
-      if(prev[ni]!==-2 || !guardPassable(ni)) continue;
-      prev[ni]=i; q.push(ni);
-      const d = Math.abs(nx-tx)+Math.abs(ny-ty);
-      if(d<bestD){ bestD=d; bestReach=ni; }
-    }
-  }
-  let end = prev[ti]!==-2 ? ti : bestReach;
-  const path = [];
-  while(end!==si && end>=0){ path.push(end); end = prev[end]; }
-  path.reverse();
-  return path;
-}
+let AC=null;
+function ac(){ try{ if(!AC && typeof AudioContext!=='undefined') AC=new AudioContext();
+  if(AC&&AC.state==='suspended') AC.resume(); }catch(e){} return AC; }
+function blip(f,dur,type,gain){ const a=ac(); if(!a) return;
+  try{ const o=a.createOscillator(),g=a.createGain(); o.type=type||'square'; o.frequency.value=f;
+    g.gain.setValueAtTime(gain||0.08,a.currentTime); g.gain.exponentialRampToValueAtTime(0.0001,a.currentTime+dur);
+    o.connect(g); g.connect(a.destination); o.start(); o.stop(a.currentTime+dur);}catch(e){} }
+function noiseBurst(dur,gain,freq){ const a=ac(); if(!a) return;
+  try{ const n=Math.floor(a.sampleRate*dur); const buf=a.createBuffer(1,n,a.sampleRate); const d=buf.getChannelData(0);
+    for(let i=0;i<n;i++) d[i]=(Math.random()*2-1)*(1-i/n);
+    const src=a.createBufferSource(); src.buffer=buf; const f=a.createBiquadFilter(); f.type='lowpass'; f.frequency.value=freq||500;
+    const g=a.createGain(); g.gain.value=gain||0.1; src.connect(f); f.connect(g); g.connect(a.destination); src.start();}catch(e){} }
+const sfx = {
+  step:l=>noiseBurst(0.05,clamp(0.02+l*0.012,0.02,0.3),320+l*40),
+  click:()=>blip(1700,0.03,'square',0.09),
+  thud:()=>blip(170,0.08,'sine',0.12),
+  snap:()=>{ blip(300,0.05,'sawtooth',0.15); noiseBurst(0.08,0.12,2500); },
+  dig:l=>noiseBurst(0.13,0.03+l*0.01,210),
+  alert:()=>{ blip(520,0.12,'square',0.12); setTimeout(()=>blip(660,0.16,'square',0.12),120); },
+  collapse:()=>noiseBurst(1.3,0.4,100),
+  coin:()=>{ blip(1300,0.05,'sine',0.1); setTimeout(()=>blip(1750,0.07,'sine',0.1),50); },
+  unlock:()=>{ blip(900,0.05,'square',0.1); setTimeout(()=>blip(600,0.1,'square',0.1),70); },
+  land:()=>blip(120,0.06,'sine',0.14),
+};
 
 // ============================================================
 // Player + reset
@@ -428,1321 +432,884 @@ function findPath(sx, sy, tx, ty){
 function resetRun(){
   genLevel();
   player = {
-    x: 4*T+16, y: 2*T+16, vx:0, vy:0, tier:2, facing:[1,0],
-    stamina:100, spoil:0, picks:3, probes:10, timbers:6,
-    lootVal:0, layer:0, stepT:0, breathT:0, lowT:0,
+    x: 3*T+T/2, y: (18-1)*T+T/2,     // on the street, left end (groundY-1 = 17)
+    vx:0, vy:0, onGround:true, climbing:false, tier:2, dir:1,
+    stamina:100, spoil:0, picks:3, probes:10, timbers:6, ropesLeft:3,
+    lootVal:0, stepT:0, breathT:0, lowT:0, coyote:0, walkPhase:0,
   };
-  exploredS = new Set(); exploredU = new Set();
-  rings = []; floaters = []; shake = 0; gameT = 0;
-  msgState = { text:'', t:0 };
-  lock = null; action = null;
-  stats = { ghost:true, snapped:false, glass:false, collapsed:false, alerted:false,
-            dug:0, picked:0, cause:'' };
+  exploredSet=new Set(); visSet=new Set();
+  rings=[]; floaters=[]; shake=0; gameT=0;
+  msgState={text:'',t:0}; lock=null; action=null;
+  cam={x:player.x, y:player.y};
+  stats={ ghost:true, snapped:false, glass:false, collapsed:false, alerted:false, dug:0, picked:0, cause:'' };
+}
+function msg(t){ msgState={text:t,t:4}; }
+function floater(x,y,text,col){ floaters.push({x,y,text,col:col||PAL.chalk,t:2.2}); }
+
+const GRAV = 900, TERMV = 520, JUMP = 300;
+
+function pTile(){ return [clamp((player.x/T)|0,0,W-1), clamp((player.y/T)|0,0,H-1)]; }
+function pcell(){ const [x,y]=pTile(); return idx(x,y); }
+function footCell(){ const x=(player.x/T)|0, y=((player.y+TIERS[player.tier].h*0.5+1)/T)|0; return inb(x,y)?idx(x,y):-1; }
+function faceCell(){ const x=((player.x+player.dir*14)/T)|0, y=(player.y/T)|0; return inb(x,y)?idx(x,y):-1; }
+function belowCell(){ const x=(player.x/T)|0, y=((player.y+8)/T)|0; return inb(x,y)?idx(x,y):-1; }
+
+function onClimb(){
+  const c = pcell();
+  return climbable(c);
 }
 
-function msg(t){ msgState = { text:t, t:4 }; }
-function floater(x, y, text, col){ floaters.push({ x, y, text, col:col||PAL.chalk, t:2.2 }); }
+function playerUpdate(dt){
+  const tier = TIERS[player.tier];
+  let ix=0, iy=0;
+  if(keys['a']||keys['arrowleft']) ix-=1;
+  if(keys['d']||keys['arrowright']) ix+=1;
+  if(keys['w']||keys['arrowup']) iy-=1;
+  if(keys['s']||keys['arrowdown']) iy+=1;
+  if(touch.stick && touch.mag>0){ ix=Math.abs(touch.vec[0])>0.3?sign(touch.vec[0]):0; iy=Math.abs(touch.vec[1])>0.3?sign(touch.vec[1]):0;
+    // horizontal magnitude sets tier
+    const hm=Math.abs(touch.vec[0])*touch.mag;
+    if(ix!==0) player.tier = hm<0.4?1: hm<0.72?2:3;
+  }
+  const busy = action && action.type!=='descend';
+  if(busy){ ix=0; iy=0; }
+  if(ix!==0) player.dir = ix;
+
+  // stamina for running
+  if(player.tier===3 && ix) player.stamina=clamp(player.stamina-12*dt,0,100);
+  else if(player.tier<=1) player.stamina=clamp(player.stamina+10*dt,0,100);
+  if(player.stamina<=0 && player.tier===3){ player.tier=2; msg('Winded.'); }
+
+  const c = pcell();
+  const climbHere = climbable(c);
+  const climbBelow = climbable(belowCell());
+
+  // ---- climbing mode ----
+  if(climbHere && (iy!==0 || player.climbing) && !busy){
+    player.climbing = true;
+    player.vy = iy * (tier.spd*0.7);
+    player.vx = ix * (tier.spd*0.5);
+    // leaving a ladder sideways onto a floor cancels climb
+    if(iy===0 && ix!==0 && player.onGround) player.climbing=false;
+  } else {
+    player.climbing = false;
+  }
+
+  if(player.climbing){
+    moveAxis(player.vx*dt, 0);
+    moveAxis(0, player.vy*dt);
+    player.onGround=false;
+  } else {
+    // ---- horizontal ----
+    const target = ix*tier.spd;
+    const accel = (Math.abs(target)>Math.abs(player.vx))?1400:2000;
+    player.vx += clamp(target-player.vx, -accel*dt, accel*dt);
+    // ---- gravity ----
+    player.vy += GRAV*dt; if(player.vy>TERMV) player.vy=TERMV;
+    // jump (up pressed while grounded) — a light hop, loud
+    if(iy<0 && (player.onGround||player.coyote>0) && !climbHere){
+      player.vy = -JUMP; player.onGround=false; player.coyote=0;
+      if(tier.base>0){ emitSound((player.x/T)|0,(player.y/T)|0, 6); }
+    }
+    const wasGround = player.onGround;
+    const fallV = player.vy;
+    moveAxis(player.vx*dt, 0);
+    moveAxis(0, player.vy*dt);
+    player.onGround = groundProbe();
+    if(player.onGround && !wasGround && fallV>260){ sfx.land(); emitSound((player.x/T)|0,(player.y/T)|0, Math.min(14,fallV/40)); }
+    if(player.onGround) player.coyote=0.1; else player.coyote=Math.max(0,player.coyote-dt);
+  }
+
+  // ---- footsteps (only when actually walking on ground) ----
+  const speed=Math.abs(player.vx);
+  // walk-cycle animation phase
+  if(player.climbing){ player.walkPhase += (Math.abs(player.vy)+Math.abs(player.vx))*dt*0.06; }
+  else if(player.onGround && speed>4){ player.walkPhase += speed*dt*0.09; }
+  else player.walkPhase += dt*2; // idle sway
+  if(player.onGround && speed>tier.spd*0.3 && tier.base>0 && !busy){
+    player.stepT-=dt;
+    if(player.stepT<=0){
+      player.stepT=tier.int;
+      const ft = floorType[footCell()] || '=';
+      const m = glass.has(footCell())?3.2:(FLOOR_MULT[ft]||1.0);
+      const loud=tier.base*m;
+      if(loud>0.4){ emitSound((player.x/T)|0,(player.y/T)|0,loud); sfx.step(loud); }
+    }
+  }
+  // heavy breathing after a run
+  if(player.tier===3 && speed>60) player.breathT=3.5;
+  else if(player.breathT>0){ player.breathT-=dt; player.lowT-=dt;
+    if(player.lowT<=0){ player.lowT=1; emitSound((player.x/T)|0,(player.y/T)|0,2); } }
+
+  // ---- loot pickup ----
+  for(const l of loot){
+    if(l.taken||l.type!=='coin') continue;
+    if(Math.hypot(player.x-(l.x*T+T/2), player.y-(l.y*T+T/2))<18){
+      l.taken=true; player.lootVal+=l.val; sfx.coin(); msg(`A purse of coin. +${l.val}`);
+    }
+  }
+  // ---- escape ----
+  if(grid[pcell()]==='X'){ mode='escaped'; }
+
+  updateAction(dt);
+}
+
+// axis-separated collision against solid tiles; returns true if blocked (for landing)
+function moveAxis(dx,dy){
+  const h = TIERS[player.tier].h, r=7;
+  const corners = (px,py)=>[[px-r,py-h*0.5],[px+r,py-h*0.5],[px-r,py+h*0.5],[px+r,py+h*0.5]];
+  let blocked=false;
+  if(dx!==0){
+    const nx=player.x+dx;
+    let ok=true;
+    for(const [cx,cy] of corners(nx,player.y)){ const tx=(cx/T)|0,ty=(cy/T)|0; if(!inb(tx,ty)||solid(idx(tx,ty))){ ok=false; break; } }
+    if(ok) player.x=nx; else { player.vx=0; blocked=true; }
+  }
+  if(dy!==0){
+    const ny=player.y+dy;
+    let ok=true;
+    for(const [cx,cy] of corners(player.x,ny)){ const tx=(cx/T)|0,ty=(cy/T)|0; if(!inb(tx,ty)||solid(idx(tx,ty))){ ok=false; break; } }
+    if(ok){ player.y=ny; }
+    else { player.vy=0; blocked=true; }
+  }
+  return blocked;
+}
+// probe: is there solid ground within 2px under the feet?
+function groundProbe(){
+  const h=TIERS[player.tier].h, r=7;
+  for(const ox of [-r, r]){
+    const tx=((player.x+ox)/T)|0, ty=((player.y+h*0.5+2)/T)|0;
+    if(inb(tx,ty) && solid(idx(tx,ty))) return true;
+  }
+  return false;
+}
 
 // ============================================================
-// Audio (procedural, lazy)
+// Actions (hold / timed)
 // ============================================================
-let AC = null;
-function ac(){
-  try{
-    if(!AC && typeof AudioContext!=='undefined') AC = new AudioContext();
-    if(AC && AC.state==='suspended') AC.resume();
-  }catch(e){}
-  return AC;
-}
-function blip(freq, dur, type, gain){
-  const a = ac(); if(!a) return;
-  try{
-    const o = a.createOscillator(), g = a.createGain();
-    o.type = type||'square'; o.frequency.value = freq;
-    g.gain.setValueAtTime(gain||0.08, a.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.0001, a.currentTime+dur);
-    o.connect(g); g.connect(a.destination);
-    o.start(); o.stop(a.currentTime+dur);
-  }catch(e){}
-}
-function noiseBurst(dur, gain, freq){
-  const a = ac(); if(!a) return;
-  try{
-    const n = Math.floor(a.sampleRate*dur);
-    const buf = a.createBuffer(1, n, a.sampleRate);
-    const d = buf.getChannelData(0);
-    for(let i=0;i<n;i++) d[i] = (Math.random()*2-1)*(1-i/n);
-    const src = a.createBufferSource(); src.buffer = buf;
-    const f = a.createBiquadFilter(); f.type='lowpass'; f.frequency.value = freq||500;
-    const g = a.createGain(); g.gain.value = gain||0.1;
-    src.connect(f); f.connect(g); g.connect(a.destination);
-    src.start();
-  }catch(e){}
-}
-const sfx = {
-  step: l => noiseBurst(0.05, clamp(0.02+l*0.012, 0.02, 0.3), 350+l*40),
-  click: () => blip(1700, 0.03, 'square', 0.09),
-  thud:  () => blip(180, 0.08, 'sine', 0.12),
-  snap:  () => { blip(300, 0.05, 'sawtooth', 0.15); noiseBurst(0.08, 0.12, 2500); },
-  dig:   l => noiseBurst(0.12, 0.03+l*0.01, 220),
-  alert: () => { blip(520, 0.12, 'square', 0.12); setTimeout(()=>blip(660,0.16,'square',0.12), 120); },
-  collapse: () => noiseBurst(1.2, 0.4, 110),
-  coin:  () => { blip(1300,0.05,'sine',0.1); setTimeout(()=>blip(1750,0.07,'sine',0.1),50); },
-  unlock:() => { blip(900,0.05,'square',0.1); setTimeout(()=>blip(600,0.1,'square',0.1),70); },
-};
-
-// ============================================================
-// Actions (hold-to-complete)
-// ============================================================
-function startAction(a){ action = a; action.t = 0; }
-function cancelAction(){ if(action){ action = null; } }
-
-function facingCell(){
-  const px = player.x/T, py = player.y/T;
-  const fx = (px + player.facing[0]*0.85)|0;
-  const fy = (py + player.facing[1]*0.85)|0;
-  return inb(fx,fy) ? idx(fx,fy) : -1;
-}
-function playerCell(){ return idx(clamp((player.x/T)|0,0,W-1), clamp((player.y/T)|0,0,H-1)); }
+function startAction(a){ action=a; action.t=0; }
+function cancelAction(){ action=null; }
+function spoilCap(){ return 6; }
 
 function tryInteract(){
-  const here = playerCell();
-  const fi = facingCell();
+  const here=pcell(), fi=faceCell(), bi=belowCell();
+  const standX=(player.x/T)|0, standY=((player.y+TIERS[player.tier].h*0.5+3)/T)|0;
+  const fc = inb(standX,standY)?idx(standX,standY):-1;
 
-  if(player.layer===0){
-    // hatch / holes under your feet
-    if(surf[here]==='H' || holes.has(here)){
-      startAction({ type:'descend', total:0.8, label:'climbing down' }); return;
-    }
-    if(fi<0) return;
-    const d = doors.get(fi);
-    if(d){
-      if(d.locked && !d.open){
-        if(player.picks<=0){ msg('The lock stares back. You have no picks left.'); return; }
-        openLock(d); return;
-      }
-      d.open = !d.open;
-      emitSound(0, d.x, d.y, d.open?3:2);
-      sfx.thud();
-      msg(d.open ? `${d.label} — open` : `${d.label} — closed`);
-      return;
-    }
-    if(surf[fi]==='W' && !openWin.has(fi)){
-      startAction({ type:'cutglass', total:18, cell:fi, label:'cutting glass' }); return;
-    }
-    const bx = loot.find(l => !l.taken && l.type==='box' && idx(l.x,l.y)===fi);
-    if(bx){ startAction({ type:'lootbox', total:3, box:bx, label:'emptying the strongbox' }); return; }
-    if(surf[fi]==='H' || holes.has(fi)){
-      startAction({ type:'descend', total:0.8, label:'climbing down' }); return;
-    }
-  } else {
-    // subsurface
-    if(surf[here]==='H' || holes.has(here)){
-      startAction({ type:'ascend', total:0.8, label:'climbing up' }); return;
-    }
-    if(fi<0) return;
-    const c = sub[fi];
-    if(!c.dug && c.mat!=='S'){
-      const m = MAT[c.mat];
-      if(!m.dig){ msg('Bedrock. Reroute.'); return; }
-      if(c.mat==='B' && false) return;
-      if(player.spoil >= spoilCap()){ msg('You are carrying too much spoil. Dump it in the sewer (G).'); return; }
-      startAction({ type:'dig', total:m.t, cell:fi, mat:c.mat, tick:0, label:`digging ${m.name}` });
+  // descend through the street grate into the sewer shaft (rope hangs below)
+  if(fc>=0 && floorType[fc]==='grate'){
+    player.x = 5*T+T/2; player.y = 19*T+T/2; player.vx=0; player.vy=40; player.climbing=true;
+    emitSound(5,18,3); msg('You slip through the grate into the sewer shaft.');
+    return;
+  }
+  // dig UP through a weak board directly overhead (you're standing just beneath it)
+  {
+    const ax=(player.x/T)|0, ay=((player.y/T)|0)-1;   // the tile above the player's cell
+    if(inb(ax,ay) && grid[idx(ax,ay)]==='w'){
+      startAction({ type:'digup', total:6, cell:idx(ax,ay), tick:0, label:'prying up the floorboards' });
       return;
     }
   }
-}
+  if(fi<0) return;
 
-function spoilCap(){ return 6; }
+  // doors
+  const d=doors.get(fi);
+  if(d){
+    if(d.locked && !d.open){
+      if(player.picks<=0){ msg('No picks left.'); return; }
+      openLock(d); return;
+    }
+    d.open=!d.open; emitSound(d.x,d.y,d.open?3:2); sfx.thud();
+    msg(d.open?`${d.label} — open`:`${d.label} — shut`); return;
+  }
+  // windows
+  if(grid[fi]==='N' && !openWin.has(fi) && !glass.has(fi)){
+    startAction({ type:'cutglass', total:16, cell:fi, label:'cutting the pane' }); return;
+  }
+  // strongbox
+  const bx=loot.find(l=>!l.taken&&l.type==='box'&&idx(l.x,l.y)===fi);
+  if(bx){ startAction({ type:'lootbox', total:3, box:bx, label:'emptying the strongbox' }); return; }
+  const bx2=loot.find(l=>!l.taken&&l.type==='box'&&Math.hypot(player.x-(l.x*T+T/2),player.y-(l.y*T+T/2))<26);
+  if(bx2){ startAction({ type:'lootbox', total:3, box:bx2, label:'emptying the strongbox' }); return; }
+
+  // dig into earth we're facing (horizontal tunneling) or straight down
+  let tgt=-1;
+  if(diggable(...cellXY(fi)) && !dug[fi]) tgt=fi;
+  else { const dx=(player.x/T)|0, dy=((player.y+10)/T)|0; if(inb(dx,dy)&&diggable(dx,dy)&&!dug[idx(dx,dy)]) tgt=idx(dx,dy); }
+  if(tgt>=0){
+    const m=MAT[mat[tgt]];
+    if(player.spoil>=spoilCap()){ msg('Too much spoil — dump it in the sewer (G).'); return; }
+    startAction({ type:'dig', total:m.t, cell:tgt, matk:mat[tgt], tick:0, label:`digging ${m.name}` });
+    return;
+  }
+}
+function cellXY(i){ return [i%W,(i/W)|0]; }
 
 function updateAction(dt){
   if(!action) return;
-  action.t += dt;
+  action.t+=dt;
   if(action.type==='dig'){
-    action.tick += dt;
-    if(action.tick >= 0.8){
-      action.tick -= 0.8;
-      const n = MAT[action.mat].n;
-      if(n>0){ emitSound(1, action.cell%W, (action.cell/W)|0, n*3); sfx.dig(n); }
-    }
-    player.stamina = clamp(player.stamina - 6*dt, 0, 100);
+    action.tick+=dt;
+    if(action.tick>=0.7){ action.tick-=0.7; const n=MAT[action.matk].n; if(n>0){ const [x,y]=cellXY(action.cell); emitSound(x,y,n*3); sfx.dig(n); } }
+    player.stamina=clamp(player.stamina-6*dt,0,100);
+  } else if(action.type==='digup'){
+    action.tick+=dt;
+    if(action.tick>=0.9){ action.tick-=0.9; const [x,y]=cellXY(action.cell); emitSound(x,y,6); sfx.dig(2); }
   }
-  if(action.type==='digup'){
-    action.tick = (action.tick||0) + dt;
-    if(action.tick >= 1){ action.tick -= 1; emitSound(1, action.cell%W, (action.cell/W)|0, 6); sfx.dig(2); }
-  }
-  if(action.t >= action.total) completeAction();
+  if(action.t>=action.total) completeAction();
 }
-
 function completeAction(){
-  const a = action; action = null;
+  const a=action; action=null;
   switch(a.type){
-    case 'descend': player.layer = 1; msg('Down into the dark. Your candle barely reaches.'); break;
-    case 'ascend':  player.layer = 0; msg('Back to the surface.'); break;
-    case 'cutglass': {
-      openWin.add(a.cell);
-      emitSound(0, a.cell%W, (a.cell/W)|0, 2);
-      msg('The pane lifts out whole. The window is yours.');
-      sfx.click();
-      break;
-    }
-    case 'lootbox': {
-      a.box.taken = true; player.lootVal += a.box.val;
-      emitSound(0, a.box.x, a.box.y, 2); sfx.coin();
-      msg(`The strongbox empties into your bag. +${a.box.val}`);
-      break;
-    }
-    case 'dig': {
-      const c = sub[a.cell];
-      c.dug = true; c.probed = true; player.spoil++; stats.dug++;
-      sfx.dig(2);
-      collapseCheck(a.cell);
-      break;
-    }
-    case 'digup': {
-      holes.add(a.cell);
-      emitSound(0, a.cell%W, (a.cell/W)|0, 5);
-      msg('Lamplight through the floorboards. You are under the strongroom.');
-      break;
-    }
-    case 'probe': {
-      const cx = a.cell%W, cy = (a.cell/W)|0;
-      sub[a.cell].probed = true;
-      for(const [dx,dy] of DIR4) if(inb(cx+dx,cy+dy)) sub[idx(cx+dx,cy+dy)].probed = true;
-      emitSound(1, cx, cy, 1);
-      msg(`Probe: ${MAT[sub[a.cell].mat].name}.`);
-      sfx.click();
-      break;
-    }
+    case 'cutglass': openWin.add(a.cell); emitSound(a.cell%W,(a.cell/W)|0,2); sfx.click(); msg('The pane lifts free. The window is open.'); break;
+    case 'lootbox': a.box.taken=true; player.lootVal+=a.box.val; emitSound(a.box.x,a.box.y,2); sfx.coin(); msg(`The strongbox is yours. +${a.box.val}`); break;
+    case 'dig': { const c=a.cell; dug[c]=true; probed[c]=true; player.spoil++; stats.dug++; sfx.dig(2); collapseCheck(c); break; }
+    case 'digup': { const c=a.cell; grid[c]=' '; dug[c]=true; emitSound(c%W,(c/W)|0,5); msg('The boards give. Lamplight spills down — you are under the vault.'); break; }
+    case 'probe': { const c=a.cell; probed[c]=true; const [cx,cy]=cellXY(c);
+      for(const [dx,dy] of DIR4) if(inb(cx+dx,cy+dy)) probed[idx(cx+dx,cy+dy)]=true;
+      emitSound(cx,cy,1); sfx.click(); msg(`Probe: ${MAT[mat[c]]?MAT[mat[c]].name:(grid[c]==='S'?'open sewer':'rock')}.`); break; }
   }
 }
 
 // ---------- collapse ----------
 function tunnelRegion(startI){
-  // connected dug, unshored, non-sewer cells; returns {cells, weight}
-  const seen = new Set([startI]);
-  const q = [startI]; const cells = [];
-  let weight = 0;
+  const seen=new Set([startI]); const q=[startI]; const cells=[]; let weight=0;
   while(q.length){
-    const i = q.pop();
-    const c = sub[i];
-    if(!c.dug || c.shored || c.mat==='S') continue;
-    cells.push(i);
-    weight += MAT[c.mat].wt;
-    const x=i%W, y=(i/W)|0;
-    for(const [dx,dy] of DIR4){
-      const nx=x+dx, ny=y+dy;
-      if(!inb(nx,ny)) continue;
-      const ni = idx(nx,ny);
-      if(seen.has(ni)) continue;
-      seen.add(ni);
-      const nc = sub[ni];
-      if(nc.dug && !nc.shored && nc.mat!=='S') q.push(ni);
-    }
+    const i=q.pop(); if(!dug[i]||shored[i]||grid[i]==='S') continue;
+    cells.push(i); weight+=MAT[mat[i]]?MAT[mat[i]].wt:0;
+    const x=i%W,y=(i/W)|0;
+    for(const [dx,dy] of DIR4){ const nx=x+dx,ny=y+dy; if(!inb(nx,ny)) continue; const ni=idx(nx,ny);
+      if(seen.has(ni)) continue; seen.add(ni);
+      if(dug[ni]&&!shored[ni]&&grid[ni]!=='S') q.push(ni); }
   }
   return { cells, weight };
 }
-
 function collapseCheck(newCell){
-  const r = tunnelRegion(newCell);
-  if(r.weight > 3){ doCollapse(r); return; }
-  if(r.weight === 3) msg('The ceiling groans. Shore it (T) before you dig on.');
-  else if(r.weight === 2) msg(`Unshored span ${r.weight}/3.`);
+  const r=tunnelRegion(newCell);
+  if(r.weight>3){ doCollapse(r); return; }
+  if(r.weight===3) msg('The tunnel groans. Shore it (T) before digging on.');
+  else if(r.weight===2) msg(`Unshored span ${r.weight}/3.`);
 }
-
 function doCollapse(region){
-  let sx=0, sy=0;
-  for(const i of region.cells){ sx += i%W; sy += (i/W)|0; }
-  sx = Math.round(sx/region.cells.length); sy = Math.round(sy/region.cells.length);
-  const pcell = playerCell();
-  let buried = false;
-  for(const i of region.cells){
-    const c = sub[i];
-    if(MAT[c.mat].wt === 0) continue;      // clay and root mass hold
-    c.dug = false; c.shored = false; c.mat = 'U'; c.probed = true;
-    if(player.layer===1 && i===pcell) buried = true;
-  }
-  stats.collapsed = true;
-  shake = 1.2;
-  sfx.collapse();
-  emitSound(1, sx, sy, 30);
-  if(buried){ stats.cause = 'The tunnel came down on you.'; mode = 'caught'; }
-  else msg('Progressive collapse. The tunnel is gone, and half the district heard it.');
+  let sx=0,sy=0; for(const i of region.cells){ sx+=i%W; sy+=(i/W)|0; }
+  sx=Math.round(sx/region.cells.length); sy=Math.round(sy/region.cells.length);
+  const pc=pcell(); let buried=false;
+  for(const i of region.cells){ if((MAT[mat[i]]?MAT[mat[i]].wt:0)===0) continue;
+    dug[i]=false; shored[i]=false; grid[i]='E'; mat[i]='U'; probed[i]=true;
+    if(i===pc) buried=true; }
+  stats.collapsed=true; shake=1.2; sfx.collapse(); emitSound(sx,sy,30);
+  if(buried){ stats.cause='The tunnel came down on you.'; mode='caught'; }
+  else msg('Progressive collapse. Half the district heard that.');
 }
 
 // ============================================================
-// Lockpicking
+// Lockpicking (unchanged feel)
 // ============================================================
 function openLock(door){
-  const pins = [];
-  for(let i=0;i<door.pins;i++){
-    const w = clamp(24 - door.pins*2.4, 6, 20);
-    pins.push({ c: 12 + Math.random()*66, w, set:false });
-  }
-  lock = { door, pins, cur:0, prog:0, wrong:0, edge:0 };
-  msg(touch.used
-    ? `${door.label}: ${door.pins} pins. Hold TENSION, sweep the pick with your other thumb.`
-    : `${door.label}: ${door.pins} pins. Hold SPACE for tension, steer the pick with the mouse.`);
+  const pins=[]; for(let i=0;i<door.pins;i++){ const w=clamp(24-door.pins*2.4,6,20); pins.push({c:12+Math.random()*66,w,set:false}); }
+  lock={ door, pins, cur:0, prog:0, wrong:0, edge:0 };
+  msg(touch.used?`${door.label}: ${door.pins} pins. Hold TENSION, sweep with your thumb.`
+    :`${door.label}: ${door.pins} pins. Hold SPACE for tension, steer with the mouse.`);
 }
-
 function lockUpdate(dt){
-  const ang = clamp((mouse.x / VIEW_W) * 90, 0, 90);
-  lock.ang = ang;
-  const tension = !!keys[' '];
-  if(!tension){ lock.wrong = 0; lock.edge = 0; lock.prog = Math.max(0, lock.prog - dt*2); return; }
-  if(lock.cur >= lock.pins.length) return;
-  const pin = lock.pins[lock.cur];
-  const inArc = Math.abs(ang - pin.c) < pin.w/2;
+  const ang=clamp((mouse.x/CW)*90,0,90); lock.ang=ang;
+  const tension=!!keys[' ']||touch.tension;
+  if(!tension){ lock.wrong=0; lock.edge=0; lock.prog=Math.max(0,lock.prog-dt*2); return; }
+  if(lock.cur>=lock.pins.length) return;
+  const pin=lock.pins[lock.cur]; const inArc=Math.abs(ang-pin.c)<pin.w/2;
   if(inArc){
-    lock.prog += dt; lock.wrong = 0;
-    if(lock.prog >= 0.5){
-      pin.set = true; lock.cur++; lock.prog = 0;
-      sfx.click();
-      emitSound(0, lock.door.x, lock.door.y, 2);
-      if(lock.cur >= lock.pins.length){
-        lock.door.locked = false; lock.door.open = true;
-        emitSound(0, lock.door.x, lock.door.y, 3);
-        sfx.unlock();
-        stats.picked++;
-        msg(`${lock.door.label} gives. You are in.`);
-        lock = null;
-        return;
-      }
-    }
+    lock.prog+=dt; lock.wrong=0;
+    if(lock.prog>=0.5){ pin.set=true; lock.cur++; lock.prog=0; sfx.click(); emitSound(lock.door.x,lock.door.y,2);
+      if(lock.cur>=lock.pins.length){ lock.door.locked=false; lock.door.open=true; emitSound(lock.door.x,lock.door.y,3); sfx.unlock(); stats.picked++; msg(`${lock.door.label} gives. You are in.`); lock=null; return; } }
   } else {
-    lock.prog = 0;
-    lock.wrong += dt;
-    if(lock.wrong > 1.2){
-      for(const p of lock.pins) p.set = false;
-      lock.cur = 0; lock.wrong = 0;
-      sfx.thud();
-      emitSound(0, lock.door.x, lock.door.y, 1);
-    }
-    if(ang < 6 || ang > 84){
-      lock.edge += dt;
-      if(lock.edge > 0.6){
-        lock.edge = 0;
-        player.picks--; stats.snapped = true;
-        sfx.snap();
-        emitSound(0, lock.door.x, lock.door.y, 9);
-        for(const p of lock.pins) p.set = false;
-        lock.cur = 0;
-        msg(player.picks>0
-          ? `Pick snapped in the lock. ${player.picks} left — and the stub is evidence.`
-          : 'Your last pick snaps. This door will not be picked tonight.');
-        if(player.picks<=0) lock = null;
-      }
-    } else lock.edge = 0;
+    lock.prog=0; lock.wrong+=dt;
+    if(lock.wrong>1.2){ for(const p of lock.pins) p.set=false; lock.cur=0; lock.wrong=0; sfx.thud(); emitSound(lock.door.x,lock.door.y,1); }
+    if(ang<6||ang>84){ lock.edge+=dt;
+      if(lock.edge>0.6){ lock.edge=0; player.picks--; stats.snapped=true; sfx.snap(); emitSound(lock.door.x,lock.door.y,9);
+        for(const p of lock.pins) p.set=false; lock.cur=0;
+        msg(player.picks>0?`Pick snapped. ${player.picks} left — a stub of evidence.`:'Your last pick snaps.');
+        if(player.picks<=0) lock=null; }
+    } else lock.edge=0;
   }
 }
 
 // ============================================================
-// Guards
+// Guards (side-view lane patrol)
 // ============================================================
+function guardV(){ return player.tier===undefined?0:1; }
 function guardCanSee(g){
-  if(player.layer !== 0 || mode!=='play') return false;
-  const dx = player.x - g.x, dy = player.y - g.y;
-  const d = Math.hypot(dx, dy);
-  if(d > 230) return false;
-  const ang = Math.atan2(dy, dx);
-  let da = Math.abs(ang - g.face);
-  if(da > Math.PI) da = TAU - da;
-  if(da > Math.PI/4) return false;
-  return losTiles(g.x/T, g.y/T, player.x/T, player.y/T);
+  if(mode!=='play') return false;
+  const dx=player.x-g.x, dy=player.y-g.y;
+  const d=Math.hypot(dx,dy); if(d>210) return false;
+  // horizontal cone: must be roughly in front, within a vertical band (same storey-ish)
+  if(sign(dx)!==g.face && Math.abs(dx)>14) return false;
+  if(Math.abs(dy)>T*1.6) return false;            // can't see far up/down through floors
+  return los(g.x/T,g.y/T,player.x/T,player.y/T);
 }
-
-function guardOpenDoorAt(i){
-  const d = doors.get(i);
-  if(d && !d.open && !d.locked){ d.open = true; emitSound(0, d.x, d.y, 3, {silentToGuards:true}); }
+function pVis(){
+  const tier=TIERS[player.tier];
+  const speed=Math.abs(player.vx);
+  const motion = player.climbing?0.7 : speed<6?0.5 : player.tier<=1?0.8 : player.tier===2?1.0:1.35;
+  return clamp(lightAtPx(player.x,player.y)*tier.stance*motion,0,1.3);
 }
+function guardLaneY(g){ return g.lane*T + T/2; }
 
-function guardMoveAlong(g, speed, dt){
-  if(!g.path || g.pi >= g.path.length) return true;
-  const ti = g.path[g.pi];
-  const tx = (ti%W)*T+16, ty = ((ti/W)|0)*T+16;
-  const dx = tx - g.x, dy = ty - g.y;
-  const d = Math.hypot(dx, dy);
-  if(d < 3){ g.pi++; return g.pi >= g.path.length; }
-  guardOpenDoorAt(ti);
-  g.face = Math.atan2(dy, dx);
-  g.x += dx/d * speed * dt;
-  g.y += dy/d * speed * dt;
-  return false;
-}
+function guardUpdate(g,dt){
+  const gx0=g.x;
+  const see=guardCanSee(g);
+  if(see){
+    const d=Math.hypot(player.x-g.x,player.y-g.y);
+    const fall=clamp(1.15-d/210,0,1.15);
+    g.susp=clamp(g.susp+pVis()*fall*g.aware*dt*55,g.floor,100);
+    g.lastKnown={x:player.x,y:player.y}; g.lastSeen=gameT;
+    if(d<24) g.susp=100;
+  } else if(gameT-g.lastSeen>1.6){ g.susp=Math.max(g.floor,g.susp-8*dt); }
+  if(g.susp>=25) stats.ghost=false;
 
-function setPathTo(g, tx, ty){
-  g.path = findPath((g.x/T)|0, (g.y/T)|0, clamp(tx,0,W-1), clamp(ty,0,H-1));
-  g.pi = 0;
-}
+  if(g.susp>=85 && g.state!=='alert'){
+    g.state='alert';
+    if(!g.shouted){ g.shouted=true; stats.alerted=true; floater(g.x,g.y-20,'INTRUDER!',PAL.oxide); sfx.alert();
+      emitSound((g.x/T)|0,(g.y/T)|0,22);
+      for(const o of guards) if(o!==g&&o.state==='patrol'){ o.susp=Math.max(o.susp,60); o.lastKnown={x:g.x,y:g.y}; } }
+  } else if(g.susp>=55 && (g.state==='patrol'||g.state==='curious')){
+    g.state='investigate'; floater(g.x,g.y-20,'Who\u2019s there?',PAL.sodium); g.sweepT=0;
+  } else if(g.susp>=25 && g.state==='patrol'){
+    g.state='curious'; g.holdT=2.4; floater(g.x,g.y-20,'\u2026what was that?',PAL.chalk);
+  }
 
-function guardUpdate(g, dt){
-  const canSee = guardCanSee(g);
-  if(canSee){
-    const d = Math.hypot(player.x-g.x, player.y-g.y);
-    const falloff = clamp(1.15 - d/230, 0, 1.15);
-    g.susp = clamp(g.susp + playerV() * falloff * g.aware * dt * 55, g.floor, 100);
-    g.lastKnown = { x:player.x, y:player.y };
-    g.lastSeen = gameT;
-    if(d < 26){ g.susp = 100; }
-  } else if(gameT - g.lastSeen > 1.6){
-    g.susp = Math.max(g.floor, g.susp - 8*dt);
-  }
-  if(g.susp >= 25) stats.ghost = false;
-
-  // state transitions
-  if(g.susp >= 85 && g.state !== 'alert'){
-    g.state = 'alert';
-    if(!g.shouted){
-      g.shouted = true; stats.alerted = true;
-      floater(g.x, g.y-22, 'INTRUDER!', PAL.oxide);
-      sfx.alert();
-      emitSound(0, (g.x/T)|0, (g.y/T)|0, 22, {silentToGuards:false});
-      for(const o of guards){
-        if(o!==g && o.state==='patrol'){
-          o.susp = Math.max(o.susp, 60);
-          o.lastKnown = { x:g.x, y:g.y };
-        }
-      }
-    }
-    g.repathT = 0;
-  }
-  else if(g.susp >= 55 && (g.state==='patrol' || g.state==='curious')){
-    g.state = 'investigate';
-    floater(g.x, g.y-22, 'Who\u2019s there?', PAL.sodium);
-    if(g.lastKnown) setPathTo(g, (g.lastKnown.x/T)|0, (g.lastKnown.y/T)|0);
-    g.sweepT = 0;
-  }
-  else if(g.susp >= 25 && g.state==='patrol'){
-    g.state = 'curious'; g.holdT = 2.5;
-    floater(g.x, g.y-22, '\u2026what was that?', PAL.chalk);
-  }
+  const spd = g.state==='alert'?120 : g.state==='investigate'?92 : 54;
 
   switch(g.state){
     case 'patrol': {
-      if(!g.path || g.pi >= g.path.length){
-        const wp = g.wps[g.wp];
-        const gi = playerTileOf(g);
-        if(gi[0]===wp[0] && gi[1]===wp[1]){ g.wp = (g.wp+1)%g.wps.length; }
-        setPathTo(g, g.wps[g.wp][0], g.wps[g.wp][1]);
-      }
-      guardMoveAlong(g, 52, dt);
+      const wp=g.wps[g.wp];
+      const tx=wp[0]*T+T/2;
+      g.dir = sign(tx-g.x)||g.dir; g.face=g.dir;
+      g.x += g.dir*spd*dt;
+      if(Math.abs(tx-g.x)<4){ g.wp=(g.wp+1)%g.wps.length; }
+      guardStayOnLane(g);
       break;
     }
     case 'curious': {
-      if(g.lastKnown) g.face = Math.atan2(g.lastKnown.y-g.y, g.lastKnown.x-g.x);
-      g.holdT -= dt;
-      if(g.holdT <= 0 && g.susp < 25){ g.state='patrol'; g.path=null; }
+      if(g.lastKnown) g.face=sign(g.lastKnown.x-g.x)||g.face;
+      g.holdT-=dt; if(g.holdT<=0&&g.susp<25){ g.state='patrol'; }
       break;
     }
-    case 'investigate': {
-      if(g.lastKnown && g.repathT<=0){ setPathTo(g, (g.lastKnown.x/T)|0, (g.lastKnown.y/T)|0); g.repathT=1.2; }
-      g.repathT -= dt;
-      const arrived = guardMoveAlong(g, 72, dt);
-      if(arrived){
-        g.sweepT += dt;
-        g.face += dt * 1.4;
-        if(g.sweepT > 8){
-          g.floor = clamp(g.floor + 9, 0, 60);
-          g.aware *= 1.1;
-          g.susp = g.floor;
-          g.state = 'patrol'; g.path = null; g.sweepT = 0;
-          floater(g.x, g.y-22, 'Hm.', PAL.draft);
-        }
+    case 'investigate': case 'alert': {
+      const tgt = (see?{x:player.x,y:player.y}:g.lastKnown);
+      if(tgt){
+        // change lanes toward target if on a different storey and a ladder is reachable
+        guardVerticalChase(g, tgt, spd, dt);
+        const tx=tgt.x;
+        if(Math.abs(tx-g.x)>6 && Math.abs(tgt.y-g.y)<T){ g.dir=sign(tx-g.x)||g.dir; g.face=g.dir; g.x+=g.dir*spd*dt; guardStayOnLane(g); }
+        else { g.face=sign(tx-g.x)||g.face; }
       }
-      break;
-    }
-    case 'alert': {
-      const target = canSee ? { x:player.x, y:player.y } : g.lastKnown;
-      g.repathT -= dt;
-      if(target && g.repathT<=0){ setPathTo(g, (target.x/T)|0, (target.y/T)|0); g.repathT = 0.5; }
-      const arrived = guardMoveAlong(g, 96, dt);
-      if(canSee) g.arriveNoSeeT = 0;
-      else if(arrived){
-        g.arriveNoSeeT += dt;
-        g.face += dt*2;
-        if(g.arriveNoSeeT > 5){
-          g.floor = clamp(g.floor + 9, 0, 60);
-          g.aware *= 1.1;
-          g.susp = g.floor; g.shouted = false;
-          g.state = 'patrol'; g.path = null; g.arriveNoSeeT = 0;
-        }
-      }
-      if(player.layer===0 && Math.hypot(player.x-g.x, player.y-g.y) < 18){
-        stats.cause = 'A hand closes on your collar.';
-        mode = 'caught';
-      }
+      g.sweepT=(g.sweepT||0)+dt;
+      if(!see && g.sweepT>7){ g.floor=clamp(g.floor+9,0,60); g.aware*=1.1; g.susp=g.floor; g.shouted=false; g.state='patrol'; g.sweepT=0; floater(g.x,g.y-20,'Hm.',PAL.draft); }
+      if(g.state==='alert' && Math.hypot(player.x-g.x,player.y-g.y)<18 && Math.abs(player.y-g.y)<T){ stats.cause='A hand closes on your collar.'; mode='caught'; }
       break;
     }
   }
+  g.walkPhase += Math.abs(g.x-gx0)*0.09;
 }
-function playerTileOf(g){ return [(g.x/T)|0, (g.y/T)|0]; }
-
-// ============================================================
-// Player update
-// ============================================================
-function playerUpdate(dt){
-  const tier = TIERS[player.tier];
-  let ix = 0, iy = 0;
-  if(keys['a']||keys['arrowleft']) ix -= 1;
-  if(keys['d']||keys['arrowright']) ix += 1;
-  if(keys['w']||keys['arrowup']) iy -= 1;
-  if(keys['s']||keys['arrowdown']) iy += 1;
-  if(touch.stick && touch.mag > 0){
-    ix = touch.vec[0]; iy = touch.vec[1];
-    player.tier = touch.tier;
-  }
-  const moving = (ix||iy);
-  if(moving && action && action.type!=='descend' && action.type!=='ascend') cancelAction();
-  if(moving){
-    const l = Math.hypot(ix,iy); ix/=l; iy/=l;
-    player.facing = [ix, iy];
-  }
-
-  // stamina
-  if(player.tier===4 && moving) player.stamina = clamp(player.stamina - 12*dt, 0, 100);
-  else if(player.tier<=2) player.stamina = clamp(player.stamina + 9*dt, 0, 100);
-  if(player.stamina<=0 && player.tier===4){ player.tier = 3; msg('Winded. You drop to a walk.'); }
-  if(player.tier===0 && player.spoil>2){ player.tier = 1; msg('Too much spoil to crawl flat.'); }
-
-  // momentum
-  const spd = (action && (action.type==='dig'||action.type==='digup'||action.type==='cutglass'||action.type==='lootbox'||action.type==='probe')) ? 0 : tier.spd;
-  const txv = ix*spd, tyv = iy*spd;
-  const accel = (Math.abs(txv)>Math.abs(player.vx)||Math.abs(tyv)>Math.abs(player.vy)) ? 380 : 520;
-  player.vx += clamp(txv - player.vx, -accel*dt, accel*dt);
-  player.vy += clamp(tyv - player.vy, -accel*dt, accel*dt);
-
-  moveCollide(player.vx*dt, player.vy*dt);
-
-  // footsteps
-  const speed = Math.hypot(player.vx, player.vy);
-  if(speed > tier.spd*0.35 && tier.base>0 && player.layer===0){
-    player.stepT -= dt;
-    if(player.stepT <= 0){
-      player.stepT = tier.int;
-      const s = SURF[glassCells.has(playerCell()) ? '#' : surf[playerCell()]] || SURF['.'];
-      let m = glassCells.has(playerCell()) ? 3.2 : s.mult;
-      const loud = tier.base * m;
-      if(loud > 0.4){ emitSound(0, (player.x/T)|0, (player.y/T)|0, loud); sfx.step(loud); }
-    }
-  } else if(player.layer===1 && speed>4 && tier.base>0){
-    player.stepT -= dt;
-    if(player.stepT<=0){ player.stepT = tier.int; sfx.step(1); }
-  }
-  // breath after running
-  if(player.tier===4 && speed>60) player.breathT = 4;
-  else if(player.breathT>0){
-    player.breathT -= dt;
-    player.lowT -= dt;
-    if(player.lowT<=0){ player.lowT = 1; emitSound(player.layer, (player.x/T)|0, (player.y/T)|0, 2); }
-  } else if(player.stamina < 20 && speed < 4){
-    player.lowT -= dt;
-    if(player.lowT<=0){ player.lowT = 1.2; emitSound(player.layer, (player.x/T)|0, (player.y/T)|0, 3); }
-  }
-
-  // coin pickup
-  if(player.layer===0){
-    for(const l of loot){
-      if(l.taken || l.type!=='coin') continue;
-      if(dist2(player.x, player.y, l.x*T+16, l.y*T+16) < 20*20){
-        l.taken = true; player.lootVal += l.val; sfx.coin();
-        msg(`A purse of coin. +${l.val}`);
-      }
-    }
-    // exit
-    if(surf[playerCell()]==='X'){
-      mode = 'escaped';
-    }
-  }
-
-  updateAction(dt);
-}
-
-function moveCollide(dx, dy){
-  const r = 9;
-  const layer = player.layer;
-  const ok = (px, py) => {
-    for(const [ox,oy] of [[-r,-r],[r,-r],[-r,r],[r,r]]){
-      const tx = ((px+ox)/T)|0, ty = ((py+oy)/T)|0;
-      if(!inb(tx,ty) || !walk(layer, idx(tx,ty))) return false;
-    }
-    return true;
-  };
-  if(ok(player.x+dx, player.y)) player.x += dx; else player.vx = 0;
-  if(ok(player.x, player.y+dy)) player.y += dy; else player.vy = 0;
-}
-
-// ============================================================
-// Input
-// ============================================================
-const keys = {};
-const mouse = { x:VIEW_W/2, y:VIEW_H/2, down:false };
-
-// ============================================================
-// Touch (mobile landscape)
-// ============================================================
-const isTouchDevice = (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0)
-  || (typeof window !== 'undefined' && 'ontouchstart' in window);
-const touch = {
-  used: false,
-  stick: null,           // { id, ox, oy, kx, ky }  (origin + knob pos, canvas coords)
-  vec: [0,0], mag: 0, tier: 0,
-  holds: new Map(),      // touch id -> key it is holding down
-  pickId: null,          // touch id steering the lockpick
-};
-let touchButtons = [];   // rebuilt every frame: { x, y, r, k, label, big }
-
-function buildTouchButtons(){
-  touchButtons = [];
-  if(!touch.used) return;
-  if(mode !== 'play') return;
-  const B = (x,y,r,k,label,big) => touchButtons.push({x,y,r,k,label,big});
-  if(lock){
-    B(866, 500, 56, ' ', 'TENSION', true);
-    B(60, 52, 32, 'escape', 'LEAVE');
-    return;
-  }
-  B(872, 502, 52, 'e', 'ACT', true);
-  if(action) B(60, 52, 32, 'escape', 'STOP');
-  if(player.layer === 0){
-    const fi = facingCell();
-    if(fi >= 0 && surf[fi] === 'W' && !openWin.has(fi)) B(764, 556, 34, 'r', 'SMASH');
-  } else {
-    B(764, 556, 34, 'f', 'PROBE');
-    B(736, 468, 34, 't', 'SHORE');
-    const here = playerCell();
-    if(weakSet.has(here) || holes.has(here)) B(756, 382, 34, 'c', 'UP');
-    else if(sub[here] && sub[here].mat === 'S' && player.spoil > 0) B(756, 382, 34, 'g', 'DUMP');
+function guardStayOnLane(g){
+  const ly=guardLaneY(g); g.y=lerp(g.y,ly,0.4);
+  // don't walk off the edge of a floor into open air: clamp to solid floor beneath
+  const gx=(g.x/T)|0, gy=((g.y+T*0.5+1)/T)|0;
+  if(inb(gx,gy) && !solid(idx(gx,gy))){
+    // step back
+    g.x -= g.dir*2; g.dir*=-1; g.face=g.dir;
   }
 }
-
-function stickApply(cx, cy){
-  const st = touch.stick;
-  let dx = cx - st.ox, dy = cy - st.oy;
-  const R = 74;
-  const d = Math.hypot(dx, dy);
-  if(d > R){ dx = dx/d*R; dy = dy/d*R; }
-  st.kx = st.ox + dx; st.ky = st.oy + dy;
-  const mag = Math.min(1, d / R);
-  if(mag < 0.14){ touch.vec = [0,0]; touch.mag = 0; return; }
-  touch.vec = [dx / (d||1), dy / (d||1)];
-  touch.mag = mag;
-  touch.tier = mag < 0.32 ? 0 : mag < 0.52 ? 1 : mag < 0.72 ? 2 : mag < 0.90 ? 3 : 4;
-}
-
-function canvasXY(t){
-  const r = canvas.getBoundingClientRect();
-  return [ (t.clientX - r.left) * (VIEW_W / r.width),
-           (t.clientY - r.top) * (CANVAS_H / r.height) ];
-}
-
-function goFullscreen(){
-  try {
-    const el = document.documentElement;
-    if(el && el.requestFullscreen && !document.fullscreenElement){
-      el.requestFullscreen().then(() => {
-        try { screen.orientation && screen.orientation.lock && screen.orientation.lock('landscape').catch(()=>{}); }
-        catch(_){}
-      }).catch(()=>{});
-    }
-  } catch(_){}
-}
-
-function onTouchStart(e){
-  e.preventDefault();
-  touch.used = true;
-  ac();
-  if(mode === 'title'){ goFullscreen(); mode = 'play'; return; }
-  if(mode === 'caught' || mode === 'escaped'){ resetRun(); mode = 'play'; return; }
-  for(const t of e.changedTouches){
-    const [cx, cy] = canvasXY(t);
-    let hit = null;
-    for(const b of touchButtons)
-      if(Math.hypot(cx - b.x, cy - b.y) <= b.r + 8){ hit = b; break; }
-    if(hit){
-      touch.holds.set(t.identifier, hit.k);
-      keys[hit.k] = true;
-      handlePress(hit.k);
-    } else if(lock){
-      touch.pickId = t.identifier;
-      mouse.x = cx;
-    } else if(cx < VIEW_W * 0.46 && !touch.stick){
-      touch.stick = { id: t.identifier, ox: cx, oy: cy, kx: cx, ky: cy };
-      stickApply(cx, cy);
-    }
+function guardVerticalChase(g,tgt,spd,dt){
+  const targetLane=(tgt.y/T)|0;
+  if(targetLane===g.lane) return;
+  // find nearest climbable column on this lane the guard can reach
+  const gy=g.lane;
+  let best=null,bd=1e9;
+  for(let x=1;x<W-1;x++){
+    const i=idx(x,gy);
+    if(climbable(i)){ const dx=Math.abs(x*T+T/2-g.x); if(dx<bd){ bd=dx; best=x; } }
   }
-}
-function onTouchMove(e){
-  e.preventDefault();
-  for(const t of e.changedTouches){
-    const [cx, cy] = canvasXY(t);
-    if(touch.stick && t.identifier === touch.stick.id) stickApply(cx, cy);
-    else if(t.identifier === touch.pickId) mouse.x = clamp(cx, 0, VIEW_W);
+  if(best!=null){
+    const bx=best*T+T/2;
+    if(Math.abs(bx-g.x)>5){ g.dir=sign(bx-g.x); g.face=g.dir; g.x+=g.dir*spd*dt; }
+    else { g.lane += sign(targetLane-g.lane); g.y=guardLaneY(g); }
   }
-}
-function onTouchEnd(e){
-  e.preventDefault();
-  for(const t of e.changedTouches){
-    if(touch.stick && t.identifier === touch.stick.id){
-      touch.stick = null; touch.vec = [0,0]; touch.mag = 0;
-    }
-    if(t.identifier === touch.pickId) touch.pickId = null;
-    const k = touch.holds.get(t.identifier);
-    if(k !== undefined){
-      touch.holds.delete(t.identifier);
-      if(![...touch.holds.values()].includes(k)){
-        keys[k] = false;
-        if(action && action.type === 'dig' && k === 'e') cancelAction();
-      }
-    }
-  }
-}
-
-function onKeyDown(e){
-  const k = e.key.toLowerCase();
-  if(keys[k]) { keys[k]=true; if([' ','arrowup','arrowdown','arrowleft','arrowright'].includes(k)) e.preventDefault(); return; }
-  keys[k] = true;
-  ac();
-  if([' ','arrowup','arrowdown','arrowleft','arrowright'].includes(k)) e.preventDefault();
-
-  if(mode==='title'){ if(k==='enter'||k===' ') mode='play'; return; }
-  if(mode==='caught' || mode==='escaped'){ if(k==='r'||k==='enter'){ resetRun(); mode='play'; } return; }
-  if(mode!=='play') return;
-  handlePress(k);
-}
-
-function handlePress(k){
-  if(lock){
-    if(k==='escape'){ lock = null; msg('You ease off the lock.'); }
-    return;
-  }
-  if(k==='escape'){ cancelAction(); return; }
-  if(k>='1' && k<='5'){ player.tier = +k-1; return; }
-  if(k==='e'){ tryInteract(); return; }
-  if(k==='r' && player.layer===0){
-    const fi = facingCell();
-    if(fi>=0 && surf[fi]==='W' && !openWin.has(fi)){
-      openWin.add(fi); stats.glass = true;
-      glassCells.add(fi);
-      emitSound(0, fi%W, (fi/W)|0, 17);
-      noiseBurst(0.25, 0.3, 3500);
-      msg('The pane shatters. Everyone within a street heard that.');
-    }
-    return;
-  }
-  if(k==='f' && player.layer===1){
-    if(player.probes<=0){ msg('No probe charges left.'); return; }
-    const fi = facingCell();
-    if(fi>=0 && !sub[fi].dug && sub[fi].mat!=='S'){
-      player.probes--;
-      startAction({ type:'probe', total:3, cell:fi, label:'probing' });
-    }
-    return;
-  }
-  if(k==='t' && player.layer===1){
-    const here = playerCell();
-    const c = sub[here];
-    if(c.dug && !c.shored){
-      if(player.timbers<=0){ msg('No shoring timbers left.'); return; }
-      player.timbers--; c.shored = true; sfx.thud();
-      msg(`Timber set. ${player.timbers} left.`);
-    }
-    return;
-  }
-  if(k==='g' && player.layer===1){
-    if(sub[playerCell()].mat==='S'){
-      if(player.spoil>0){ msg(`${player.spoil} spoil into the sewer. Gone.`); player.spoil = 0; sfx.thud(); }
-      else msg('Nothing to dump.');
-    } else msg('Spoil can only vanish into the sewer.');
-    return;
-  }
-  if(k==='c' && player.layer===1){
-    const here = playerCell();
-    if(weakSet.has(here) && !holes.has(here)){
-      startAction({ type:'digup', total:8, cell:here, label:'digging up through the floor' });
-    } else if(holes.has(here)){
-      startAction({ type:'ascend', total:0.8, label:'climbing up' });
-    } else msg('The ceiling here is solid ground. Weak floor lies under the strongroom.');
-    return;
-  }
-}
-function onKeyUp(e){
-  const k = e.key.toLowerCase();
-  keys[k] = false;
-  if(action && action.type==='dig' && !keys['e']) cancelAction();
-  if(action && (action.type==='cutglass'||action.type==='lootbox'||action.type==='probe'||action.type==='digup') && k==='e') {}
-}
-function onWheel(e){
-  if(mode!=='play' || lock) return;
-  player.tier = clamp(player.tier + (e.deltaY>0?-1:1), 0, 4);
-  e.preventDefault();
-}
-
-// hold-to-continue for E-driven digs
-function holdChecks(){
-  if(action && action.type==='dig' && !keys['e']) cancelAction();
-}
-
-// ============================================================
-// Render
-// ============================================================
-let canvas, ctx;
-
-function tilePx(i){ return [(i%W)*T, ((i/W)|0)*T]; }
-
-function render(){
-  ctx.setTransform(1,0,0,1,0,0);
-  ctx.fillStyle = PAL.void;
-  ctx.fillRect(0,0,VIEW_W,CANVAS_H);
-
-  const shx = shake>0 ? (Math.random()-0.5)*shake*14 : 0;
-  const shy = shake>0 ? (Math.random()-0.5)*shake*14 : 0;
-
-  camX = clamp(player.x - VIEW_W/2, 0, W*T - VIEW_W);
-  camY = clamp(player.y - VIEW_H/2, 0, H*T - VIEW_H);
-  ctx.save();
-  ctx.beginPath(); ctx.rect(0,0,VIEW_W,VIEW_H); ctx.clip();
-  ctx.translate(-camX+shx, -camY+shy);
-
-  const x0 = (camX/T)|0, y0 = (camY/T)|0;
-  const x1 = Math.min(W-1, ((camX+VIEW_W)/T)|0), y1 = Math.min(H-1, ((camY+VIEW_H)/T)|0);
-
-  if(player.layer===0) renderSurface(x0,y0,x1,y1);
-  else renderSub(x0,y0,x1,y1);
-
-  renderRings();
-  if(player.layer===0) renderGuards();
-  renderPlayer();
-  renderFloaters();
-  ctx.restore();
-
-  renderHUD();
-  if(lock) renderLock();
-  buildTouchButtons();
-  renderTouchUI();
-  if(mode==='title') renderTitle();
-  if(mode==='caught') renderEnd(false);
-  if(mode==='escaped') renderEnd(true);
-}
-
-function renderSurface(x0,y0,x1,y1){
-  const pv = playerV();
-  for(let y=y0;y<=y1;y++) for(let x=x0;x<=x1;x++){
-    const i = idx(x,y);
-    const vis = visNow.has(i);
-    const exp = exploredS.has(i);
-    if(!vis && !exp) continue;
-    const px = x*T, py = y*T;
-    const ch = surf[i];
-    const d = doors.get(i);
-    if(vis){
-      const lt = clamp(lightAtPx(px+16, py+16), 0.05, 1);
-      if(ch==='#'){
-        ctx.fillStyle = mix(PAL.draft, PAL.chalk, lt*0.55);
-        ctx.fillRect(px,py,T,T);
-        ctx.fillStyle = PAL.void; ctx.globalAlpha = 0.25;
-        ctx.fillRect(px+2,py+2,T-4,T-4); ctx.globalAlpha = 1;
-      } else if(ch==='W'){
-        ctx.fillStyle = mix(PAL.draft, PAL.chalk, lt*0.5); ctx.fillRect(px,py,T,T);
-        ctx.fillStyle = openWin.has(i) ? PAL.void : mix(PAL.void, PAL.verd, 0.45);
-        ctx.fillRect(px+4, py+10, T-8, T-20);
-      } else {
-        ctx.fillStyle = mix(PAL.void, PAL.sodium, 0.06 + lt*0.5);
-        ctx.fillRect(px,py,T,T);
-        ctx.strokeStyle = PAL.void; ctx.globalAlpha = 0.18;
-        ctx.strokeRect(px+0.5,py+0.5,T-1,T-1); ctx.globalAlpha = 1;
-        if(ch==='g'||ch===','){ ctx.fillStyle = PAL.void; ctx.globalAlpha=0.15;
-          ctx.fillRect(px+6,py+6,3,3); ctx.fillRect(px+20,py+16,3,3); ctx.globalAlpha=1; }
-        if(ch==='X'){ ctx.fillStyle = PAL.verd; ctx.globalAlpha=0.5;
-          ctx.fillRect(px+4,py+13,T-8,6); ctx.globalAlpha=1; }
-        if(ch==='H'){ ctx.strokeStyle = PAL.chalk; ctx.lineWidth=2;
-          ctx.beginPath(); ctx.arc(px+16,py+16,10,0,TAU); ctx.stroke();
-          ctx.fillStyle = PAL.void; ctx.beginPath(); ctx.arc(px+16,py+16,7,0,TAU); ctx.fill(); }
-        if(holes.has(i)){ ctx.fillStyle = PAL.void;
-          ctx.beginPath(); ctx.arc(px+16,py+16,11,0,TAU); ctx.fill();
-          ctx.strokeStyle = PAL.oxide; ctx.stroke(); }
-        if(weakSet.has(i) && !holes.has(i)){ ctx.strokeStyle = PAL.draft; ctx.globalAlpha=0.5;
-          ctx.strokeRect(px+6.5,py+6.5,T-13,T-13); ctx.globalAlpha=1; }
-      }
-      if(d) drawDoor(d, px, py, true);
-    } else {
-      // blueprint memory
-      if(ch==='#'){
-        ctx.strokeStyle = PAL.draft; ctx.lineWidth = 1;
-        ctx.strokeRect(px+1.5, py+1.5, T-3, T-3);
-        ctx.beginPath(); ctx.moveTo(px+3, py+T-3); ctx.lineTo(px+T-3, py+3);
-        ctx.globalAlpha = 0.6; ctx.stroke(); ctx.globalAlpha = 1;
-      } else if(ch==='W'){
-        ctx.strokeStyle = PAL.draft;
-        ctx.strokeRect(px+4.5, py+10.5, T-9, T-21);
-      } else {
-        ctx.fillStyle = PAL.draft; ctx.globalAlpha = 0.22;
-        ctx.fillRect(px+15, py+15, 2, 2); ctx.globalAlpha = 1;
-        if(ch==='X'){ ctx.strokeStyle=PAL.draft; ctx.strokeRect(px+4.5,py+13.5,T-9,5); }
-        if(ch==='H'){ ctx.strokeStyle=PAL.draft; ctx.beginPath(); ctx.arc(px+16,py+16,9,0,TAU); ctx.stroke(); }
-        if(d) drawDoor(d, px, py, false);
-      }
-    }
-  }
-  // loot (visible only)
-  for(const l of loot){
-    if(l.taken) continue;
-    const i = idx(l.x,l.y);
-    if(!visNow.has(i) && !exploredS.has(i)) continue;
-    const vis = visNow.has(i);
-    const px = l.x*T, py = l.y*T;
-    if(l.type==='coin'){
-      ctx.fillStyle = vis ? PAL.sodium : PAL.draft;
-      ctx.beginPath(); ctx.arc(px+16, py+16, 5, 0, TAU); ctx.fill();
-      ctx.strokeStyle = vis ? PAL.chalk : PAL.draft; ctx.stroke();
-    } else {
-      ctx.fillStyle = vis ? PAL.verd : PAL.draft;
-      ctx.fillRect(px+7, py+9, 18, 14);
-      ctx.strokeStyle = vis ? PAL.chalk : PAL.draft;
-      ctx.strokeRect(px+7.5, py+9.5, 17, 13);
-      ctx.fillStyle = PAL.void; ctx.fillRect(px+14, py+14, 4, 4);
-    }
-  }
-}
-
-function drawDoor(d, px, py, lit){
-  ctx.strokeStyle = lit ? (d.locked ? PAL.oxide : PAL.verd) : PAL.draft;
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  if(d.open){ ctx.moveTo(px+4, py+4); ctx.lineTo(px+14, py+14); }
-  else { ctx.moveTo(px+4, py+16); ctx.lineTo(px+28, py+16); }
-  ctx.stroke();
-  ctx.lineWidth = 1;
-  if(d.locked && !d.open && lit){
-    ctx.fillStyle = PAL.oxide;
-    ctx.fillRect(px+13, py+9, 6, 5);
-  }
-}
-
-const MATCOL = { L:0.35, C:0.5, R:0.42, G:0.6, U:0.55, B:0.75, K:0.9, S:0.2 };
-function renderSub(x0,y0,x1,y1){
-  for(let y=y0;y<=y1;y++) for(let x=x0;x<=x1;x++){
-    const i = idx(x,y);
-    const vis = visNow.has(i);
-    const exp = exploredU.has(i);
-    const c = sub[i];
-    if(!vis && !exp && !c.probed) continue;
-    const px = x*T, py = y*T;
-    if(c.dug || c.mat==='S'){
-      const lit = vis ? clamp(1 - Math.hypot(player.x-px-16, player.y-py-16)/(4.5*T), 0, 1) : 0;
-      ctx.fillStyle = vis ? mix(PAL.void, PAL.sodium, 0.05 + lit*0.4) : PAL.void;
-      ctx.fillRect(px,py,T,T);
-      if(!vis){ ctx.strokeStyle = PAL.draft; ctx.globalAlpha=0.4; ctx.strokeRect(px+1.5,py+1.5,T-3,T-3); ctx.globalAlpha=1; }
-      if(c.mat==='S' && vis){
-        ctx.strokeStyle = PAL.verd; ctx.globalAlpha = 0.35;
-        ctx.beginPath(); ctx.moveTo(px, py+22); ctx.lineTo(px+T, py+22); ctx.stroke();
-        ctx.globalAlpha = 1;
-      }
-      if(c.shored){
-        ctx.strokeStyle = vis ? PAL.verd : PAL.draft; ctx.lineWidth = 3;
-        ctx.beginPath(); ctx.moveTo(px+5, py+3); ctx.lineTo(px+5, py+T-3);
-        ctx.moveTo(px+T-5, py+3); ctx.lineTo(px+T-5, py+T-3);
-        ctx.moveTo(px+3, py+5); ctx.lineTo(px+T-3, py+5); ctx.stroke();
-        ctx.lineWidth = 1;
-      }
-      if(weakSet.has(i) && !holes.has(i) && vis){
-        ctx.strokeStyle = PAL.sodium; ctx.globalAlpha=0.7;
-        ctx.setLineDash([3,3]); ctx.strokeRect(px+5.5,py+5.5,T-11,T-11);
-        ctx.setLineDash([]); ctx.globalAlpha=1;
-      }
-      if(holes.has(i) && vis){
-        ctx.strokeStyle = PAL.sodium;
-        ctx.beginPath(); ctx.arc(px+16,py+16,10,0,TAU); ctx.stroke();
-      }
-    } else if(c.probed){
-      ctx.fillStyle = mix(PAL.void, PAL.draft, MATCOL[c.mat]);
-      ctx.fillRect(px,py,T,T);
-      ctx.strokeStyle = PAL.void; ctx.strokeRect(px+0.5,py+0.5,T-1,T-1);
-      ctx.fillStyle = PAL.chalk; ctx.globalAlpha = 0.8;
-      ctx.font = '10px monospace'; ctx.textAlign='center';
-      const lbl = { L:'lm', C:'cl', R:'rt', G:'gv', U:'rb', B:'ft', K:'RK', S:'sw' }[c.mat];
-      ctx.fillText(lbl, px+16, py+20);
-      ctx.globalAlpha = 1;
-    } else if(vis || exp){
-      // tunnel wall face
-      ctx.fillStyle = mix(PAL.void, PAL.draft, 0.5);
-      ctx.fillRect(px,py,T,T);
-      ctx.strokeStyle = PAL.void; ctx.strokeRect(px+0.5,py+0.5,T-1,T-1);
-    }
-  }
-}
-
-function renderRings(){
-  for(const r of rings){
-    if(r.layer !== player.layer) continue;
-    const a = r.t;
-    for(const [i, L] of r.cells){
-      const [px, py] = tilePx(i);
-      ctx.fillStyle = PAL.oxide;
-      ctx.globalAlpha = clamp(L / r.max, 0.08, 0.8) * a * 0.3;
-      ctx.fillRect(px, py, T, T);
-    }
-    ctx.globalAlpha = 1;
-  }
-}
-
-function renderGuards(){
-  for(const g of guards){
-    const gi = idx((g.x/T)|0, (g.y/T)|0);
-    if(!visNow.has(gi)) continue;
-    // vision cone
-    const coneCol = g.state==='alert' ? PAL.oxide : g.susp>25 ? PAL.sodium : PAL.chalk;
-    ctx.fillStyle = coneCol; ctx.globalAlpha = 0.08;
-    ctx.beginPath();
-    ctx.moveTo(g.x, g.y);
-    for(let a=-Math.PI/4; a<=Math.PI/4+0.001; a+=Math.PI/24){
-      const ang = g.face + a;
-      let rr = 230;
-      const steps = 20;
-      for(let s=1;s<=steps;s++){
-        const rx = g.x + Math.cos(ang)*(230*s/steps);
-        const ry = g.y + Math.sin(ang)*(230*s/steps);
-        const tx=(rx/T)|0, ty=(ry/T)|0;
-        if(!inb(tx,ty) || opaqueS(idx(tx,ty))){ rr = 230*s/steps; break; }
-      }
-      ctx.lineTo(g.x + Math.cos(ang)*rr, g.y + Math.sin(ang)*rr);
-    }
-    ctx.closePath(); ctx.fill();
-    ctx.globalAlpha = 1;
-    // lantern glow
-    if(g.lantern){
-      ctx.fillStyle = PAL.sodium; ctx.globalAlpha = 0.1;
-      ctx.beginPath(); ctx.arc(g.x, g.y, 4.2*T, 0, TAU); ctx.fill();
-      ctx.globalAlpha = 1;
-    }
-    // body
-    const col = g.state==='alert' ? PAL.oxide : g.state==='patrol' ? PAL.chalk : PAL.sodium;
-    ctx.fillStyle = col;
-    ctx.beginPath(); ctx.arc(g.x, g.y, 9, 0, TAU); ctx.fill();
-    ctx.strokeStyle = PAL.void;
-    ctx.beginPath(); ctx.moveTo(g.x, g.y);
-    ctx.lineTo(g.x + Math.cos(g.face)*12, g.y + Math.sin(g.face)*12); ctx.stroke();
-    // suspicion pip
-    if(g.susp > 4){
-      ctx.fillStyle = PAL.void; ctx.fillRect(g.x-11, g.y-19, 22, 5);
-      ctx.fillStyle = g.susp>=85?PAL.oxide:g.susp>=55?PAL.sodium:PAL.chalk;
-      ctx.fillRect(g.x-10, g.y-18, 20*(g.susp/100), 3);
-    }
-  }
-}
-
-function renderPlayer(){
-  const p = player;
-  const tier = TIERS[p.tier];
-  const rad = p.tier===0 ? 6 : p.tier===1 ? 8 : 9;
-  if(p.layer===1){
-    ctx.fillStyle = PAL.sodium; ctx.globalAlpha = 0.08;
-    ctx.beginPath(); ctx.arc(p.x, p.y, 4.5*T, 0, TAU); ctx.fill(); ctx.globalAlpha = 1;
-  }
-  ctx.fillStyle = PAL.verd;
-  ctx.beginPath(); ctx.arc(p.x, p.y, rad, 0, TAU); ctx.fill();
-  ctx.strokeStyle = PAL.void;
-  ctx.beginPath(); ctx.moveTo(p.x, p.y);
-  ctx.lineTo(p.x + p.facing[0]*rad*1.4, p.y + p.facing[1]*rad*1.4); ctx.stroke();
-
-  if(action && action.total > 1){
-    const w = 36, t = clamp(action.t/action.total, 0, 1);
-    ctx.fillStyle = PAL.void; ctx.fillRect(p.x-w/2-1, p.y-24, w+2, 7);
-    ctx.fillStyle = PAL.verd; ctx.fillRect(p.x-w/2, p.y-23, w*t, 5);
-    ctx.fillStyle = PAL.chalk; ctx.font = '10px monospace'; ctx.textAlign = 'center';
-    ctx.fillText(action.label, p.x, p.y-28);
-  }
-}
-
-function renderFloaters(){
-  ctx.font = '12px monospace'; ctx.textAlign = 'center';
-  for(const f of floaters){
-    ctx.fillStyle = f.col;
-    ctx.globalAlpha = clamp(f.t/1.2, 0, 1);
-    ctx.fillText(f.text, f.x, f.y - (2.2-f.t)*12);
-  }
-  ctx.globalAlpha = 1;
-}
-
-// ---------- HUD ----------
-function renderHUD(){
-  ctx.setTransform(1,0,0,1,0,0);
-  ctx.fillStyle = PAL.void;
-  ctx.fillRect(0, VIEW_H, VIEW_W, CANVAS_H-VIEW_H);
-  ctx.strokeStyle = PAL.draft;
-  ctx.beginPath(); ctx.moveTo(0, VIEW_H+0.5); ctx.lineTo(VIEW_W, VIEW_H+0.5); ctx.stroke();
-
-  const y = VIEW_H + 25;
-  ctx.font = '13px monospace'; ctx.textAlign = 'left';
-
-  // speed tiers
-  for(let i=0;i<5;i++){
-    ctx.fillStyle = i===player.tier ? PAL.verd : PAL.draft;
-    ctx.fillRect(14 + i*12, y-12, 8, 14);
-  }
-  ctx.fillStyle = PAL.chalk;
-  ctx.fillText(TIERS[player.tier].name, 82, y);
-
-  // light gem
-  const V = playerV();
-  ctx.beginPath(); ctx.arc(190, y-5, 11, 0, TAU);
-  ctx.fillStyle = mix(PAL.void, PAL.chalk, clamp(V,0,1)); ctx.fill();
-  ctx.strokeStyle = guards.some(g=>g.susp>=55) ? PAL.oxide : PAL.draft;
-  ctx.lineWidth = 2; ctx.stroke(); ctx.lineWidth = 1;
-
-  // stamina
-  ctx.fillStyle = PAL.draft; ctx.fillRect(215, y-11, 90, 8);
-  ctx.fillStyle = player.stamina<20 ? PAL.oxide : PAL.verd;
-  ctx.fillRect(215, y-11, 90*player.stamina/100, 8);
-
-  // inventory
-  ctx.fillStyle = PAL.chalk;
-  let inv = `picks ${player.picks}   probes ${player.probes}   timber ${player.timbers}   spoil ${player.spoil}/${spoilCap()}`;
-  ctx.fillText(inv, 330, y);
-  ctx.fillStyle = PAL.sodium;
-  ctx.textAlign = 'right';
-  ctx.fillText(`${player.lootVal} coin`, VIEW_W-14, y);
-
-  // layer + span
-  ctx.textAlign = 'left';
-  if(player.layer===1){
-    ctx.fillStyle = PAL.draft;
-    ctx.fillText('BELOW', 705, y);
-    const r = tunnelRegion(playerCell());
-    if(sub[playerCell()].dug){
-      ctx.fillStyle = r.weight>=3 ? PAL.oxide : PAL.chalk;
-      ctx.fillText(`span ${r.weight}/3`, 760, y);
-    }
-  }
-
-  // message line
-  if(msgState.t > 0){
-    ctx.fillStyle = PAL.chalk;
-    ctx.globalAlpha = clamp(msgState.t, 0, 1);
-    ctx.textAlign = 'center';
-    ctx.font = '13px monospace';
-    ctx.fillText(msgState.text, VIEW_W/2, VIEW_H - 14);
-    ctx.globalAlpha = 1;
-  }
-}
-
-// ---------- lock overlay ----------
-function renderLock(){
-  ctx.setTransform(1,0,0,1,0,0);
-  ctx.fillStyle = PAL.void; ctx.globalAlpha = 0.75;
-  ctx.fillRect(0,0,VIEW_W,VIEW_H); ctx.globalAlpha = 1;
-
-  const cx = VIEW_W/2, cy = 300;
-  ctx.strokeStyle = PAL.draft; ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.arc(cx, cy, 110, Math.PI, TAU); ctx.stroke();
-
-  // pins
-  const n = lock.pins.length;
-  for(let i=0;i<n;i++){
-    const p = lock.pins[i];
-    ctx.fillStyle = p.set ? PAL.verd : i===lock.cur ? PAL.sodium : PAL.draft;
-    ctx.fillRect(cx - n*14 + i*28, cy - 190, 18, p.set ? 16 : 26);
-  }
-
-  // pick angle needle
-  const a = Math.PI + (lock.ang/90)*Math.PI;
-  ctx.strokeStyle = PAL.chalk; ctx.lineWidth = 3;
-  ctx.beginPath(); ctx.moveTo(cx, cy);
-  ctx.lineTo(cx + Math.cos(a)*104, cy + Math.sin(a)*104); ctx.stroke();
-  ctx.lineWidth = 1;
-
-  // tension + feedback
-  const tension = !!keys[' '];
-  ctx.font = '13px monospace'; ctx.textAlign = 'center';
-  ctx.fillStyle = tension ? PAL.sodium : PAL.draft;
-  ctx.fillText(tension ? 'TENSION HELD' : 'hold SPACE for tension', cx, cy+40);
-  if(tension && lock.cur<lock.pins.length){
-    const pin = lock.pins[lock.cur];
-    const inArc = Math.abs(lock.ang - pin.c) < pin.w/2;
-    if(inArc){
-      ctx.fillStyle = PAL.verd;
-      ctx.fillText('…the pin is giving…', cx, cy+62);
-    } else if(lock.wrong > 0.5){
-      ctx.fillStyle = PAL.oxide;
-      ctx.fillText('wrong tension — the pins will drop', cx, cy+62);
-    }
-    if(lock.edge > 0.2){
-      ctx.fillStyle = PAL.oxide;
-      ctx.fillText('!! the pick is flexing !!', cx, cy+82);
-    }
-  }
-  ctx.fillStyle = PAL.draft;
-  ctx.fillText(`${lock.door.label} — pin ${Math.min(lock.cur+1, n)} of ${n}   ·   ESC to withdraw   ·   the night does not pause`, cx, cy+120);
-}
-
-// ---------- title / end ----------
-function renderTouchUI(){
-  if(!touch.used) return;
-  ctx.setTransform(1,0,0,1,0,0);
-  // joystick
-  if(touch.stick && mode === 'play' && !lock){
-    const st = touch.stick;
-    ctx.strokeStyle = PAL.chalk; ctx.globalAlpha = 0.22;
-    ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.arc(st.ox, st.oy, 74, 0, TAU); ctx.stroke();
-    // tier band ticks on the ring
-    ctx.globalAlpha = 0.14;
-    for(const f of [0.32, 0.52, 0.72, 0.90]){
-      ctx.beginPath(); ctx.arc(st.ox, st.oy, 74*f, 0, TAU); ctx.stroke();
-    }
-    ctx.globalAlpha = 0.4;
-    ctx.fillStyle = touch.tier >= 3 ? PAL.sodium : PAL.verd;
-    ctx.beginPath(); ctx.arc(st.kx, st.ky, 26, 0, TAU); ctx.fill();
-    ctx.globalAlpha = 1; ctx.lineWidth = 1;
-  }
-  // buttons
-  for(const b of touchButtons){
-    const held = [...touch.holds.values()].includes(b.k);
-    ctx.globalAlpha = held ? 0.5 : 0.24;
-    ctx.fillStyle = held ? PAL.verd : PAL.draft;
-    ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, TAU); ctx.fill();
-    ctx.globalAlpha = held ? 0.9 : 0.55;
-    ctx.strokeStyle = PAL.chalk; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, TAU); ctx.stroke();
-    ctx.fillStyle = PAL.chalk;
-    ctx.font = (b.big ? 'bold 15px' : 'bold 11px') + ' monospace';
-    ctx.textAlign = 'center';
-    ctx.fillText(b.label, b.x, b.y + 4);
-    ctx.globalAlpha = 1; ctx.lineWidth = 1;
-  }
-}
-
-function renderTitle(){
-  ctx.setTransform(1,0,0,1,0,0);
-  ctx.fillStyle = PAL.void; ctx.globalAlpha = 0.88;
-  ctx.fillRect(0,0,VIEW_W,CANVAS_H); ctx.globalAlpha = 1;
-  ctx.textAlign = 'center';
-  ctx.fillStyle = PAL.chalk;
-  ctx.font = 'bold 54px monospace';
-  ctx.fillText('S P O I L', VIEW_W/2, 120);
-  ctx.font = '14px monospace';
-  ctx.fillStyle = PAL.draft;
-  ctx.fillText('the dirt you dig out, and the goods you carry home', VIEW_W/2, 150);
-
-  ctx.fillStyle = PAL.chalk; ctx.font = '13px monospace'; ctx.textAlign = 'left';
-  const lines = [
-    'CONTRACT — the counting house on Ropewalk Street.',
-    'A strongbox sits in a carpeted strongroom. Three ways to it:',
-    '',
-    '   the LOCK        pick the front door, then the six-pin strongroom door',
-    '   the WINDOW      cut or break the glass on the east wall',
-    '   the GROUND      the old well drops into a sewer branch. Dig.',
-    '',
-    ...(isTouchDevice ? [
-    'LEFT THUMB   drag to move — a small tilt is a crawl, a full tilt is a run',
-    'ACT (hold)   interact / dig       PROBE · SHORE · UP · DUMP appear underground',
-    'SMASH        appears when you face a window     STOP  cancels what you\u2019re doing',
-    'LOCKS        hold TENSION with your right thumb, sweep the pick with your left',
-    ] : [
-    'WASD / arrows  move        mouse wheel or 1–5   speed (prone→run)',
-    'E  interact / dig (hold)   F  probe the earth    T  shore the tunnel',
-    'C  dig up through a weak floor                   G  dump spoil in the sewer',
-    'R  smash a window (loud)   ESC  stop what you\u2019re doing',
-    ]),
-    '',
-    'Sound floods through doors and vents — watch the red wash when you make noise.',
-    'Clay never falls. Loam counts one. Gravel counts double. Span over 3 collapses.',
-    'Take the box. Reach the lit exit, top-right of the street.',
-  ];
-  let y = 210;
-  for(const l of lines){ ctx.fillText(l, 170, y); y += 22; }
-  ctx.textAlign = 'center';
-  ctx.fillStyle = PAL.sodium; ctx.font = '16px monospace';
-  ctx.fillText(isTouchDevice ? '— tap to begin the night —' : '— press ENTER to begin the night —', VIEW_W/2, y+18);
-}
-
-function renderEnd(escaped){
-  ctx.setTransform(1,0,0,1,0,0);
-  ctx.fillStyle = PAL.void; ctx.globalAlpha = 0.85;
-  ctx.fillRect(0,0,VIEW_W,CANVAS_H); ctx.globalAlpha = 1;
-  ctx.textAlign = 'center';
-  if(!escaped){
-    ctx.fillStyle = PAL.oxide; ctx.font = 'bold 40px monospace';
-    ctx.fillText('TAKEN', VIEW_W/2, 200);
-    ctx.fillStyle = PAL.chalk; ctx.font = '14px monospace';
-    ctx.fillText(stats.cause || 'The night ends in irons.', VIEW_W/2, 240);
-    ctx.fillStyle = PAL.draft;
-    ctx.fillText(touch.used ? 'tap to run the job again' : 'press R to run the job again', VIEW_W/2, 290);
-    return;
-  }
-  ctx.fillStyle = PAL.verd; ctx.font = 'bold 40px monospace';
-  ctx.fillText('THE FENCE', VIEW_W/2, 140);
-  ctx.font = '14px monospace';
-  let mult = 1;
-  const rows = [];
-  rows.push([`take`, `${player.lootVal} coin`]);
-  if(stats.ghost){ mult *= 1.5; rows.push(['GHOST — no guard ever stirred', '×1.5']); }
-  rows.push(['BLOODLESS — no bodies', '×1.3']); mult *= 1.3;
-  const clean = !stats.snapped && !stats.glass && !stats.collapsed;
-  if(clean){ mult *= 1.25; rows.push(['CLEAN — no evidence left behind', '×1.25']); }
-  else {
-    const ev = [];
-    if(stats.snapped) ev.push('a snapped pick in a lock');
-    if(stats.glass) ev.push('broken glass');
-    if(stats.collapsed) ev.push('a caved-in tunnel');
-    rows.push([`evidence: ${ev.join(', ')}`, '—']);
-  }
-  const xp = Math.round((player.lootVal/10) * mult);
-  let y = 200;
-  ctx.fillStyle = PAL.chalk;
-  for(const [a,b] of rows){
-    ctx.textAlign = 'left'; ctx.fillText(a, 280, y);
-    ctx.textAlign = 'right'; ctx.fillText(b, 680, y);
-    y += 26;
-  }
-  y += 10;
-  ctx.textAlign = 'center';
-  ctx.fillStyle = PAL.sodium; ctx.font = 'bold 20px monospace';
-  ctx.fillText(`${xp} XP`, VIEW_W/2, y);
-  ctx.fillStyle = PAL.draft; ctx.font = '13px monospace';
-  ctx.fillText(`cells dug ${stats.dug} · locks picked ${stats.picked}${player.lootVal===0?' · you left empty-handed':''}`, VIEW_W/2, y+30);
-  ctx.fillText(touch.used ? 'tap for another night' : 'press R for another night', VIEW_W/2, y+70);
 }
 
 // ============================================================
 // Loop
 // ============================================================
 function step(dt){
-  gameT += dt;
-  if(shake>0) shake = Math.max(0, shake - dt*1.6);
-  for(const r of rings) r.t -= dt;
-  rings = rings.filter(r => r.t > 0);
-  for(const f of floaters) f.t -= dt;
-  floaters = floaters.filter(f => f.t > 0);
-  if(msgState.t > 0) msgState.t -= dt;
-
-  if(mode !== 'play'){ visNow = visNow || new Set(); return; }
-
-  holdChecks();
-  if(lock){
-    lockUpdate(dt);
-    updateAction(0);
-  } else {
-    playerUpdate(dt);
+  gameT+=dt;
+  if(shake>0) shake=Math.max(0,shake-dt*1.6);
+  for(const r of rings) r.t-=dt; rings=rings.filter(r=>r.t>0);
+  for(const f of floaters){ f.t-=dt; f.y-=dt*10; } floaters=floaters.filter(f=>f.t>0);
+  if(msgState.t>0) msgState.t-=dt;
+  if(mode!=='play'){ return; }
+  if(lock){ lockUpdate(dt); updateAction(0); }
+  else { playerUpdate(dt); }
+  for(const g of guards) guardUpdate(g,dt);
+  // vision / explored
+  visSet = computeVis();
+  for(const i of visSet) exploredSet.add(i);
+}
+function computeVis(){
+  const vis=new Set(); const px=player.x/T, py=player.y/T;
+  const rad = player.climbing?7: (grid[pcell()]==='S'||belowGround())?6:11;
+  vis.add(pcell());
+  for(let a=0;a<360;a+=3){
+    const dx=Math.cos(a*Math.PI/180)*0.45, dy=Math.sin(a*Math.PI/180)*0.45;
+    let fx=px,fy=py;
+    for(let s=0;s<rad/0.45;s++){ fx+=dx; fy+=dy; const tx=fx|0,ty=fy|0; if(!inb(tx,ty)) break; const i=idx(tx,ty); vis.add(i); if(opaque(i)) break; }
   }
-  for(const g of guards) guardUpdate(g, dt);
+  return vis;
+}
+function belowGround(){ return (player.y/T)|0 > 18; }
 
-  // FOV + memory
-  const rad = player.layer===0 ? 13 : 5.5;
-  visNow = computeFOV(player.x/T, player.y/T, player.layer, rad);
-  const mem = player.layer===0 ? exploredS : exploredU;
-  for(const i of visNow) mem.add(i);
+// ============================================================
+// Input
+// ============================================================
+const keys={};
+const mouse={ x:VW/2, y:VH/2 };
+const isTouchDevice = (typeof navigator!=='undefined'&&navigator.maxTouchPoints>0)||(typeof window!=='undefined'&&'ontouchstart' in window);
+const touch={ used:false, stick:null, vec:[0,0], mag:0, holds:new Map(), pickId:null, tension:false };
+let touchButtons=[];
+
+function onKeyDown(e){
+  const k=e.key.toLowerCase();
+  if(!keys[k]){ keys[k]=true; }
+  ac();
+  if([' ','arrowup','arrowdown','arrowleft','arrowright'].includes(k)) e.preventDefault();
+  if(mode==='title'){ if(k==='enter'||k===' ') mode='play'; return; }
+  if(mode==='caught'||mode==='escaped'){ if(k==='r'||k==='enter'){ resetRun(); mode='play'; } return; }
+  if(mode!=='play') return;
+  handlePress(k);
+}
+function handlePress(k){
+  if(lock){ if(k==='escape'){ lock=null; msg('You ease off the lock.'); } return; }
+  if(k==='escape'){ cancelAction(); return; }
+  if(k>='1'&&k<='4'){ player.tier=+k-1; return; }
+  if(k==='e'||k==='enter'){ tryInteract(); return; }
+  if(k==='f'){ // probe (underground, facing earth)
+    const fi=faceCell(); if(fi>=0 && grid[fi]==='E' && !dug[fi] && mat[fi]!=='K'){ if(player.probes<=0){ msg('No probe charges.'); return; } player.probes--; startAction({type:'probe',total:2.5,cell:fi,label:'probing'}); }
+    return;
+  }
+  if(k==='t'){ const c=pcell(); if(dug[c]&&!shored[c]){ if(player.timbers<=0){ msg('No timbers.'); return; } player.timbers--; shored[c]=true; sfx.thud(); msg(`Timber set. ${player.timbers} left.`); } return; }
+  if(k==='g'){ const c=pcell(); if(grid[c]==='S'){ if(player.spoil>0){ msg(`${player.spoil} spoil into the sewer. Gone.`); player.spoil=0; sfx.thud(); } else msg('Nothing to dump.'); } else msg('Dump spoil in the sewer.'); return; }
+  if(k==='r'){ // deploy rope down a shaft OR smash window
+    const fi=faceCell();
+    if(fi>=0 && grid[fi]==='N' && !openWin.has(fi) && !glass.has(fi)){ glass.add(fi); stats.glass=true; emitSound(fi%W,(fi/W)|0,17); msg('The pane shatters. The whole street heard it.'); return; }
+    // rope: if standing at a ledge with open air below
+    const bx=(player.x/T)|0, by=((player.y+12)/T)|0;
+    if(player.ropesLeft>0 && inb(bx,by) && !solid(idx(bx,by)) && !climbable(idx(bx,by))){
+      let y=by, n=0; while(y<H-1 && !solid(idx(bx,y)) && n<10){ ropes.add(idx(bx,y)); y++; n++; }
+      if(n>0){ player.ropesLeft--; sfx.thud(); msg(`Rope dropped. ${player.ropesLeft} left.`); }
+    }
+    return;
+  }
+}
+function onKeyUp(e){ const k=e.key.toLowerCase(); keys[k]=false; if(action&&action.type==='dig'&&!keys['e']) cancelAction(); }
+function onWheel(e){ if(mode!=='play'||lock) return; player.tier=clamp(player.tier+(e.deltaY>0?-1:1),0,3); e.preventDefault(); }
+
+// ---- touch ----
+function buildTouchButtons(){
+  touchButtons=[]; if(!touch.used||mode!=='play') return;
+  const B=(x,y,r,k,label,big)=>touchButtons.push({x,y,r,k,label,big});
+  if(lock){ B(1045,460,60,'tension','TENSION',true); B(72,64,34,'escape','LEAVE'); return; }
+  B(1058,472,54,'e','ACT',true);
+  if(action) B(72,64,34,'escape','STOP');
+  // contextual
+  const fi=faceCell(), c=pcell();
+  if(fi>=0 && grid[fi]==='N' && !openWin.has(fi) && !glass.has(fi)) B(930,486,40,'r','SMASH');
+  if(grid[c]==='E'||belowGround()){
+    B(930,486,40,'f','PROBE'); B(1058,352,40,'t','SHORE');
+    if(grid[c]==='S'&&player.spoil>0) B(1058,236,40,'g','DUMP');
+    const bx=(player.x/T)|0, by=((player.y+12)/T)|0;
+    if(player.ropesLeft>0 && inb(bx,by) && !solid(idx(bx,by)) && !climbable(idx(bx,by))) B(930,372,38,'r','ROPE');
+  }
+}
+function canvasXY(t){ const r=canvas.getBoundingClientRect(); return [ (t.clientX-r.left)*(CW/r.width), (t.clientY-r.top)*(CH/r.height) ]; }
+function stickApply(cx,cy){ const st=touch.stick; let dx=cx-st.ox,dy=cy-st.oy; const R=92; const d=Math.hypot(dx,dy);
+  if(d>R){ dx=dx/d*R; dy=dy/d*R; } st.kx=st.ox+dx; st.ky=st.oy+dy;
+  const mag=Math.min(1,d/R); if(mag<0.16){ touch.vec=[0,0]; touch.mag=0; return; } touch.vec=[dx/(d||1),dy/(d||1)]; touch.mag=mag; }
+function goFullscreen(){ try{ const el=document.documentElement; if(el&&el.requestFullscreen&&!document.fullscreenElement){ el.requestFullscreen().then(()=>{ try{ screen.orientation&&screen.orientation.lock&&screen.orientation.lock('landscape').catch(()=>{});}catch(_){}}).catch(()=>{}); } }catch(_){} }
+function onTouchStart(e){ e.preventDefault(); touch.used=true; ac();
+  if(mode==='title'){ goFullscreen(); mode='play'; return; }
+  if(mode==='caught'||mode==='escaped'){ resetRun(); mode='play'; return; }
+  for(const t of e.changedTouches){ const [cx,cy]=canvasXY(t); let hit=null;
+    for(const b of touchButtons) if(Math.hypot(cx-b.x,cy-b.y)<=b.r+8){ hit=b; break; }
+    if(hit){ if(hit.k==='tension'){ touch.tension=true; touch.holds.set(t.identifier,'tension'); }
+      else { touch.holds.set(t.identifier,hit.k); keys[hit.k]=true; handlePress(hit.k); } }
+    else if(lock){ touch.pickId=t.identifier; mouse.x=cx; }
+    else if(cx<CW*0.42 && !touch.stick){ touch.stick={id:t.identifier,ox:cx,oy:cy,kx:cx,ky:cy}; stickApply(cx,cy); }
+  }
+}
+function onTouchMove(e){ e.preventDefault(); for(const t of e.changedTouches){ const [cx,cy]=canvasXY(t);
+  if(touch.stick&&t.identifier===touch.stick.id) stickApply(cx,cy); else if(t.identifier===touch.pickId) mouse.x=clamp(cx,0,CW); } }
+function onTouchEnd(e){ e.preventDefault(); for(const t of e.changedTouches){
+  if(touch.stick&&t.identifier===touch.stick.id){ touch.stick=null; touch.vec=[0,0]; touch.mag=0; }
+  if(t.identifier===touch.pickId) touch.pickId=null;
+  const k=touch.holds.get(t.identifier);
+  if(k!==undefined){ touch.holds.delete(t.identifier);
+    if(k==='tension') touch.tension=[...touch.holds.values()].includes('tension');
+    else if(![...touch.holds.values()].includes(k)){ keys[k]=false; if(action&&action.type==='dig'&&k==='e') cancelAction(); } } } }
+
+// ============================================================
+// Render
+// ============================================================
+let canvas, ctx;
+function render(){
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.fillStyle=PAL.void; ctx.fillRect(0,0,CW,CH);
+
+  // camera follows player, clamped; zoomed 2x
+  const tx=clamp(player.x-VW/2, 0, W*T-VW), ty=clamp(player.y-VH/2, 0, H*T-VH);
+  cam.x=lerp(cam.x,tx,0.15); cam.y=lerp(cam.y,ty,0.15);
+  const shx=shake>0?(Math.random()-0.5)*shake*10:0, shy=shake>0?(Math.random()-0.5)*shake*10:0;
+
+  ctx.save();
+  ctx.beginPath(); ctx.rect(0,0,CW,CH-HUD_H); ctx.clip();
+  ctx.setTransform(SCALE,0,0,SCALE,-(cam.x+shx)*SCALE,-(cam.y+shy)*SCALE);
+
+  const x0=Math.max(0,(cam.x/T)|0), y0=Math.max(0,(cam.y/T)|0);
+  const x1=Math.min(W-1,((cam.x+VW)/T)|0), y1=Math.min(H-1,((cam.y+VH)/T)|0);
+
+  drawWorld(x0,y0,x1,y1);
+  drawRings();
+  drawLoot();
+  drawGuards();
+  drawPlayer();
+  drawFloaters();
+  ctx.restore();
+
+  drawHUD();
+  if(lock) drawLock();
+  buildTouchButtons(); drawTouchUI();
+  if(mode==='title') drawTitle();
+  else if(mode==='caught') drawEnd(false);
+  else if(mode==='escaped') drawEnd(true);
 }
 
-let last = 0, acc = 0;
-function frame(t){
-  const now = t/1000;
-  let dt = Math.min(0.25, now - last);
-  last = now;
-  acc += dt;
-  const h = 1/60;
-  while(acc >= h){ step(h); acc -= h; }
-  render();
-  requestAnimationFrame(frame);
+function cellLit(i,x,y){
+  const seen=exploredSet.has(i), vis=visSet.has(i);
+  if(!seen) return 0;
+  if(!vis) return 0.12;                 // blueprint memory: dim
+  return clamp(0.2+lightmap[i]*0.9, 0.12, 1);
+}
+
+function drawWorld(x0,y0,x1,y1){
+  const groundY=18;
+  for(let y=y0;y<=y1;y++) for(let x=x0;x<=x1;x++){
+    const i=idx(x,y), k=grid[i];
+    if(!exploredSet.has(i)) continue;
+    const vis=visSet.has(i);
+    const px=x*T, py=y*T;
+    const L=cellLit(i,x,y);
+    let base=null, top=null;
+    const underground = y>groundY;
+    if(k==='#'||k==='K'){ base = underground? '#141821' : '#171b24'; top='#20283a'; }
+    else if(k==='E'){
+      if(dug[i]){ base = shored[i]? '#241d16' : mix('#0d0f14', MAT[mat[i]].col, 0.25); }
+      else { base = probed[i]||vis ? MAT[mat[i]].col : '#161a20'; }
+    }
+    else if(k==='='||k==='w'){ const ft=floorType[i];
+      base = ft==='carpet'? '#3a2130' : ft==='tile'? '#26303a' : ft==='street'? '#1c222c' : '#2a2016';
+      if(k==='w') top='#4a3a24'; }
+    else if(k==='S'){ base='#0c1016'; }
+    else if(k==='X'){ base=mix('#1c222c', PAL.sodium, 0.25); }
+    else { base=null; } // air/ladder/rope/door/window drawn below
+    if(base){ ctx.fillStyle = vis? shade(base,L) : shade(base,0.5); ctx.fillRect(px,py,T,T);
+      if(top && vis){ ctx.fillStyle=shade(top,L); ctx.fillRect(px,py,T,3); } }
+
+    // overlays
+    if(k==='H'){ drawLadder(px,py,L); }
+    if(k==='r'||ropes.has(i)){ drawRope(px,py,L); }
+    if(k==='D'){ const d=doors.get(i); drawDoor(px,py,d,L); }
+    if(k==='N'){ drawWindow(px,py,i,L); }
+    if(k==='X'){ ctx.fillStyle=shade(PAL.sodium,0.6*L); ctx.fillRect(px+T*0.3,py,T*0.4,T); }
+    // dig hint: subtle grid on undug earth in view
+    if(k==='E'&&!dug[i]&&vis&&mat[i]!=='K'){ ctx.strokeStyle='rgba(0,0,0,0.25)'; ctx.strokeRect(px+0.5,py+0.5,T-1,T-1); }
+  }
+}
+function shade(col,L){ return mix('#0A0C11', col, clamp(L,0,1)); }
+function drawLadder(px,py,L){ ctx.strokeStyle=shade(PAL.draft,0.7*L+0.2); ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(px+7,py); ctx.lineTo(px+7,py+T); ctx.moveTo(px+T-7,py); ctx.lineTo(px+T-7,py+T);
+  for(let r=4;r<T;r+=7){ ctx.moveTo(px+7,py+r); ctx.lineTo(px+T-7,py+r); } ctx.stroke(); ctx.lineWidth=1; }
+function drawRope(px,py,L){ ctx.strokeStyle=shade(PAL.sodium,0.5*L+0.2); ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(px+T/2,py); ctx.lineTo(px+T/2,py+T); ctx.stroke(); ctx.lineWidth=1; }
+function drawDoor(px,py,d,L){ if(d&&d.open) return;
+  ctx.fillStyle=shade(d&&d.locked?'#3a2a1c':'#2a2620', L); ctx.fillRect(px+3,py+1,T-6,T-1);
+  ctx.fillStyle=shade(PAL.sodium,0.6*L); ctx.fillRect(px+T-8,py+T/2-2,3,4);
+  if(d&&d.locked){ ctx.fillStyle=shade(PAL.oxide,0.7*L); ctx.fillRect(px+T-9,py+T/2-1,2,2); } }
+function drawWindow(px,py,i,L){ const open=openWin.has(i), smashed=glass.has(i);
+  ctx.strokeStyle=shade(PAL.draft,0.8); ctx.strokeRect(px+2,py+1,T-4,T-2);
+  if(open){ } else if(smashed){ ctx.strokeStyle=shade(PAL.chalk,0.5*L); ctx.beginPath(); ctx.moveTo(px+4,py+4); ctx.lineTo(px+T-5,py+T-4); ctx.moveTo(px+T-6,py+5); ctx.lineTo(px+7,py+T-5); ctx.stroke(); }
+  else { ctx.fillStyle=`rgba(120,160,190,${0.14+0.12*L})`; ctx.fillRect(px+3,py+2,T-6,T-4); ctx.strokeStyle=shade(PAL.chalk,0.4*L); ctx.beginPath(); ctx.moveTo(px+T/2,py+2); ctx.lineTo(px+T/2,py+T-2); ctx.stroke(); } }
+
+function drawRings(){ for(const r of rings){ const a=r.t/0.9; for(const [i,l] of r.cells){ if(!visSet.has(i)&&!exploredSet.has(i)) continue;
+  const x=(i%W)*T,y=((i/W)|0)*T; ctx.fillStyle=`rgba(184,67,58,${0.05+0.16*(l/r.max)*a})`; ctx.fillRect(x,y,T,T); } } }
+
+function drawLoot(){ for(const l of loot){ if(l.taken) continue; const i=idx(l.x,l.y); if(!exploredSet.has(i)) continue;
+  const vis=visSet.has(i); const L=vis?lightmap[i]*0.9+0.2:0.35; const px=l.x*T+T/2, py=l.y*T+T/2;
+  if(l.type==='coin'){ ctx.fillStyle=shade(PAL.sodium,L); ctx.beginPath(); ctx.arc(px,py-2,4,0,TAU); ctx.fill(); }
+  else { ctx.fillStyle=shade(PAL.sodium,L); ctx.fillRect(px-8,py-6,16,10); ctx.strokeStyle=shade('#000',0.6); ctx.strokeRect(px-8,py-6,16,10); ctx.fillStyle=shade(PAL.oxide,L); ctx.fillRect(px-2,py-3,4,3); } } }
+
+// ---------- humanoid figure ----------
+// Draws a person standing on (cx, feetY), facing dir, animated by phase.
+// pose: 'stand'|'walk'|'run'|'crouch'|'prone'|'climb'. cols = {skin, cloth, accent, line}
+function drawHuman(cx, feetY, dir, pose, phase, cols, L){
+  const sh = v=>shade(v, L);
+  ctx.lineCap='round';
+  const swing = Math.sin(phase);        // -1..1 gait
+  const swing2 = Math.sin(phase+Math.PI);
+  if(pose==='prone'){
+    // lying low, crawling — mostly horizontal
+    const bodyY = feetY-3;
+    ctx.strokeStyle=sh(cols.cloth); ctx.lineWidth=5;
+    ctx.beginPath(); ctx.moveTo(cx-dir*8, bodyY); ctx.lineTo(cx+dir*7, bodyY-1); ctx.stroke();
+    // head forward
+    ctx.fillStyle=sh(cols.skin); ctx.beginPath(); ctx.arc(cx+dir*9, bodyY-1, 2.6, 0, TAU); ctx.fill();
+    // arm reaching
+    ctx.strokeStyle=sh(cols.cloth); ctx.lineWidth=2.2;
+    ctx.beginPath(); ctx.moveTo(cx+dir*2, bodyY); ctx.lineTo(cx+dir*12, bodyY+2+swing*2); ctx.stroke();
+    ctx.lineWidth=1; return;
+  }
+  // vertical figure metrics scale with pose
+  const crouch = pose==='crouch';
+  const legLen = crouch?5 : 9;
+  const torsoLen = crouch?7 : 9;
+  const headR = 3.4;
+  const hipY = feetY - legLen;
+  const shoulderY = hipY - torsoLen;
+  const headY = shoulderY - headR - 0.5;
+  const lean = pose==='run'? dir*3 : crouch? dir*2 : 0;
+
+  if(pose==='climb'){
+    // front-facing on a ladder/rope: body vertical, limbs reaching alternately
+    const midx=cx;
+    ctx.strokeStyle=sh(cols.cloth); ctx.lineWidth=5;
+    ctx.beginPath(); ctx.moveTo(midx, shoulderY); ctx.lineTo(midx, hipY+1); ctx.stroke();  // torso
+    // legs on rungs
+    ctx.lineWidth=2.6;
+    ctx.beginPath(); ctx.moveTo(midx, hipY); ctx.lineTo(midx-3, hipY+legLen*0.6+swing*2); ctx.lineTo(midx-3, feetY); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(midx, hipY); ctx.lineTo(midx+3, hipY+legLen*0.6+swing2*2); ctx.lineTo(midx+3, feetY); ctx.stroke();
+    // arms reaching up alternately
+    ctx.strokeStyle=sh(cols.accent); ctx.lineWidth=2.4;
+    ctx.beginPath(); ctx.moveTo(midx, shoulderY+1); ctx.lineTo(midx-4, shoulderY-4+swing2*3); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(midx, shoulderY+1); ctx.lineTo(midx+4, shoulderY-4+swing*3); ctx.stroke();
+    ctx.fillStyle=sh(cols.skin); ctx.beginPath(); ctx.arc(midx, headY, headR, 0, TAU); ctx.fill();
+    ctx.lineWidth=1; return;
+  }
+
+  // side-on standing / walking / running
+  const gaitAmp = pose==='run'?6 : pose==='walk'?4 : crouch?1.2 : 0.6;
+  const armAmp  = pose==='run'?5 : pose==='walk'?3 : 0.6;
+  // legs (swing around hip)
+  ctx.strokeStyle=sh(cols.cloth); ctx.lineWidth=2.8;
+  ctx.beginPath(); ctx.moveTo(cx, hipY); ctx.lineTo(cx+swing*gaitAmp, feetY); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx, hipY); ctx.lineTo(cx+swing2*gaitAmp, feetY); ctx.stroke();
+  // torso
+  ctx.strokeStyle=sh(cols.cloth); ctx.lineWidth=5;
+  ctx.beginPath(); ctx.moveTo(cx, hipY); ctx.lineTo(cx+lean, shoulderY); ctx.stroke();
+  // back arm then front arm (accent = front, e.g. holding a tool)
+  ctx.lineWidth=2.4; ctx.strokeStyle=sh(cols.cloth);
+  ctx.beginPath(); ctx.moveTo(cx+lean, shoulderY+1); ctx.lineTo(cx+lean+swing2*armAmp, shoulderY+7); ctx.stroke();
+  // head
+  ctx.fillStyle=sh(cols.skin); ctx.beginPath(); ctx.arc(cx+lean, headY, headR, 0, TAU); ctx.fill();
+  // hat / cap brim in facing dir
+  if(cols.hat){ ctx.fillStyle=sh(cols.hat); ctx.fillRect(cx+lean-headR, headY-headR-1, headR*2, 2.2);
+    ctx.fillRect(cx+lean+ (dir>0?headR-1:-headR-2), headY-headR, 3, 1.8); }
+  // front arm (accent)
+  ctx.strokeStyle=sh(cols.accent); ctx.lineWidth=2.6;
+  ctx.beginPath(); ctx.moveTo(cx+lean, shoulderY+1); ctx.lineTo(cx+lean+dir*3+swing*armAmp, shoulderY+7); ctx.stroke();
+  ctx.lineWidth=1;
+}
+
+function poseFor(p){
+  if(p.climbing) return 'climb';
+  const t=p.tier;
+  if(t===0) return 'prone';
+  if(t===1) return 'crouch';
+  if(!p.onGround) return 'stand';
+  if(Math.abs(p.vx)>4) return t===3?'run':'walk';
+  return 'stand';
+}
+
+function drawGuards(){ for(const g of guards){ const gi=idx((g.x/T)|0,(g.y/T)|0); if(!visSet.has(gi)&&!exploredSet.has(gi)) continue;
+  const vis=visSet.has(gi);
+  // vision cone from the eyes, in facing dir
+  if(vis){ const col = g.state==='alert'?PAL.oxide : g.state==='investigate'?PAL.sodium : g.state==='curious'?PAL.chalk:PAL.draft;
+    const ex=g.x, ey=g.y-16; const R=210, spread=0.34;
+    const grad=ctx.createLinearGradient(ex,ey, ex+g.face*R, ey);
+    grad.addColorStop(0, col); grad.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle=grad; ctx.globalAlpha=0.16;
+    ctx.beginPath(); ctx.moveTo(ex,ey);
+    ctx.lineTo(ex+g.face*R, ey-R*spread); ctx.lineTo(ex+g.face*R, ey+R*spread); ctx.closePath(); ctx.fill(); ctx.globalAlpha=1; }
+  const L=vis?clamp(0.5+lightAtPx(g.x,g.y)*0.6,0.4,1):0.4;
+  const moving=Math.abs(g.x - (g._px||g.x))>0.2; g._px=g.x;
+  const pose = g.state==='alert'?'run' : moving?'walk':'stand';
+  const cols={ skin:'#c9a88a', cloth:'#33405e', accent:'#8fa0be', line:'#0A0C11', hat:'#20283a' };
+  drawHuman(g.x, g.y+13, g.face, pose, g.walkPhase, cols, L);
+  // lantern held out in facing dir
+  if(g.lantern){ const lx=g.x+g.face*7, ly=g.y+2;
+    ctx.fillStyle=`rgba(233,162,59,${0.85*L})`; ctx.beginPath(); ctx.arc(lx,ly,3.2,0,TAU); ctx.fill();
+    ctx.globalAlpha=0.18*L; ctx.fillStyle=PAL.sodium; ctx.beginPath(); ctx.arc(lx,ly,9,0,TAU); ctx.fill(); ctx.globalAlpha=1; }
+  // suspicion bar above head
+  if(g.susp>3 && vis){ const w=18, s=clamp(g.susp/100,0,1); ctx.fillStyle='rgba(0,0,0,0.55)'; ctx.fillRect(g.x-w/2,g.y-26,w,3);
+    ctx.fillStyle = g.susp>=85?PAL.oxide:g.susp>=55?PAL.sodium:PAL.chalk; ctx.fillRect(g.x-w/2,g.y-26,w*s,3);
+    if(g.state==='alert'){ ctx.fillStyle=PAL.oxide; ctx.font='bold 9px monospace'; ctx.textAlign='center'; ctx.fillText('!',g.x,g.y-29); } } } }
+
+function drawPlayer(){ const h=TIERS[player.tier].h; const lit=lightAtPx(player.x,player.y);
+  const L=clamp(0.45+lit*0.6+pVis()*0.2, 0.35, 1);
+  const pose=poseFor(player);
+  // burglar: dark cloth, pale hands/face, sodium tool in the lead hand
+  const cols={ skin:'#c7b299', cloth:'#1b2436', accent:PAL.sodium, line:'#0A0C11', hat:'#141a26' };
+  const feetY = player.y + h*0.5;
+  drawHuman(player.x, feetY, player.dir, pose, player.walkPhase, cols, L);
+  // action ring above the head
+  if(action){ const topY = feetY - h - 8;
+    ctx.strokeStyle=PAL.sodium; ctx.lineWidth=2; ctx.beginPath();
+    ctx.arc(player.x, topY, 7, -Math.PI/2, -Math.PI/2 + TAU*(action.t/action.total)); ctx.stroke(); ctx.lineWidth=1; }
+  // spoil load pips at the feet
+  for(let s=0;s<player.spoil;s++){ ctx.fillStyle=shade('#6a4a30',0.9); ctx.fillRect(player.x-6+s*2.4, feetY+1, 1.8,1.8); } }
+
+function drawFloaters(){ ctx.textAlign='center'; ctx.font='7px monospace';
+  for(const f of floaters){ ctx.globalAlpha=clamp(f.t,0,1); ctx.fillStyle=f.col; ctx.fillText(f.text,f.x,f.y); } ctx.globalAlpha=1; }
+
+// ============================================================
+// HUD + overlays
+// ============================================================
+function drawHUD(){
+  ctx.setTransform(1,0,0,1,0,0);
+  const y0=CH-HUD_H;
+  ctx.fillStyle=PAL.void; ctx.fillRect(0,y0,CW,HUD_H);
+  ctx.strokeStyle=PAL.draft; ctx.beginPath(); ctx.moveTo(0,y0+0.5); ctx.lineTo(CW,y0+0.5); ctx.stroke();
+  ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+
+  // speed tiers
+  for(let i=0;i<4;i++){ ctx.fillStyle=i===player.tier?PAL.verd:PAL.draft; ctx.fillRect(22+i*16,y0+14,12,18); }
+  ctx.fillStyle=PAL.chalk; ctx.font='13px monospace'; ctx.fillText(TIERS[player.tier].name, 22, y0+52);
+
+  // light gem
+  const lit=lightAtPx(player.x,player.y);
+  ctx.fillStyle=mix(PAL.void,PAL.sodium,lit); ctx.beginPath(); ctx.arc(132,y0+24,10,0,TAU); ctx.fill();
+  ctx.strokeStyle=PAL.draft; ctx.stroke();
+  ctx.fillStyle=PAL.draft; ctx.font='10px monospace'; ctx.fillText('LIGHT',116,y0+52);
+
+  // stamina
+  ctx.fillStyle=PAL.draft; ctx.fillRect(182,y0+18,120,9); ctx.fillStyle=player.stamina<25?PAL.oxide:PAL.verd; ctx.fillRect(182,y0+18,120*player.stamina/100,9);
+  ctx.fillStyle=PAL.draft; ctx.font='10px monospace'; ctx.fillText('WIND',182,y0+52);
+
+  // inventory
+  ctx.font='13px monospace'; ctx.fillStyle=PAL.chalk;
+  const inv=`picks ${player.picks}    probes ${player.probes}    timbers ${player.timbers}    ropes ${player.ropesLeft}    spoil ${player.spoil}/${spoilCap()}`;
+  ctx.fillText(inv, 340, y0+26);
+  ctx.fillStyle=PAL.sodium; ctx.font='bold 14px monospace'; ctx.fillText(`take  ${player.lootVal}`, 340, y0+52);
+
+  // depth indicator
+  const depth=((player.y/T)|0)-18;
+  ctx.textAlign='right'; ctx.fillStyle=PAL.draft; ctx.font='11px monospace';
+  ctx.fillText(depth>0?`${depth} below ground`:'street level', CW-24, y0+26);
+
+  // message line
+  if(msgState.t>0){ ctx.globalAlpha=clamp(msgState.t,0,1); ctx.textAlign='center'; ctx.fillStyle=PAL.chalk; ctx.font='13px monospace';
+    ctx.fillText(msgState.text, CW/2, y0+60); ctx.globalAlpha=1; }
+  ctx.textAlign='left';
+}
+
+function drawLock(){
+  ctx.setTransform(1,0,0,1,0,0);
+  const w=560,h=150, x=(CW-w)/2, y=(CH-HUD_H-h)/2;
+  ctx.fillStyle='rgba(10,12,17,0.92)'; ctx.fillRect(x,y,w,h); ctx.strokeStyle=PAL.draft; ctx.strokeRect(x,y,w,h);
+  ctx.textAlign='center'; ctx.fillStyle=PAL.chalk; ctx.font='13px monospace';
+  ctx.fillText(`${lock.door.label} — pin ${Math.min(lock.cur+1,lock.pins.length)} of ${lock.pins.length}`, CW/2, y+26);
+  const bx=x+40, bw=w-80, by=y+56;
+  ctx.fillStyle=PAL.void; ctx.fillRect(bx,by,bw,26); ctx.strokeStyle=PAL.draft; ctx.strokeRect(bx,by,bw,26);
+  // pins
+  for(let i=0;i<lock.pins.length;i++){ const p=lock.pins[i];
+    const cx=bx+(p.c/90)*bw, hw=(p.w/90)*bw/2;
+    ctx.fillStyle = p.set?PAL.verd : i===lock.cur?PAL.sodium:PAL.draft;
+    ctx.globalAlpha = p.set?0.8:i===lock.cur?0.5:0.25;
+    ctx.fillRect(cx-hw,by,hw*2,26); ctx.globalAlpha=1;
+  }
+  // needle
+  const ang=clamp((mouse.x/CW)*90,0,90); const nx=bx+(ang/90)*bw;
+  ctx.strokeStyle = (ang<6||ang>84)?PAL.oxide:PAL.chalk; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(nx,by-6); ctx.lineTo(nx,by+32); ctx.stroke(); ctx.lineWidth=1;
+  ctx.fillStyle=PAL.draft; ctx.font='10px monospace';
+  ctx.fillText((keys[' ']||touch.tension)?'tension held':'apply tension', CW/2, y+h-14);
+}
+
+function drawTouchUI(){
+  if(!touch.used) return;
+  ctx.setTransform(1,0,0,1,0,0);
+  if(touch.stick && mode==='play' && !lock){ const st=touch.stick;
+    ctx.strokeStyle=PAL.chalk; ctx.globalAlpha=0.18; ctx.lineWidth=3;
+    ctx.beginPath(); ctx.arc(st.ox,st.oy,92,0,TAU); ctx.stroke();
+    ctx.globalAlpha=0.4; ctx.fillStyle=touch.mag>0.72&&Math.abs(touch.vec[0])>0.5?PAL.sodium:PAL.verd;
+    ctx.beginPath(); ctx.arc(st.kx,st.ky,32,0,TAU); ctx.fill(); ctx.globalAlpha=1; ctx.lineWidth=1; }
+  for(const b of touchButtons){ const held=[...touch.holds.values()].includes(b.k)||(b.k==='tension'&&touch.tension);
+    ctx.globalAlpha=held?0.5:0.22; ctx.fillStyle=held?PAL.verd:PAL.draft; ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,TAU); ctx.fill();
+    ctx.globalAlpha=held?0.95:0.6; ctx.strokeStyle=PAL.chalk; ctx.lineWidth=2.5; ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,TAU); ctx.stroke();
+    ctx.fillStyle=PAL.chalk; ctx.font=(b.big?'bold 18px':'bold 13px')+' monospace'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(b.label,b.x,b.y);
+    ctx.globalAlpha=1; ctx.lineWidth=1; }
+  ctx.textBaseline='alphabetic';
+}
+
+function drawTitle(){
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.fillStyle=PAL.void; ctx.globalAlpha=0.9; ctx.fillRect(0,0,CW,CH); ctx.globalAlpha=1;
+  ctx.textAlign='center'; ctx.fillStyle=PAL.chalk; ctx.font='bold 52px monospace';
+  ctx.fillText('S P O I L', CW/2, 96);
+  ctx.font='13px monospace'; ctx.fillStyle=PAL.draft;
+  ctx.fillText('a house in cross-section — rob it from any angle', CW/2, 124);
+  ctx.textAlign='left'; ctx.fillStyle=PAL.chalk; ctx.font='12px monospace';
+  const L = isTouchDevice ? [
+    'The counting house stands cut open before you: three storeys, a street, and the earth beneath.',
+    'The strongbox waits in the ground-floor vault. Reach it, then get back to the lit alley.',
+    '',
+    'LEFT THUMB   move; push up/down at a ladder, rope or shaft to climb; a small tilt is a crouch',
+    'ACT          pick locks, cut glass, empty the box, and DIG the earth you face or stand over',
+    'Underground  PROBE the dirt, SHORE a long tunnel, DUMP spoil in the sewer, drop a ROPE down a shaft',
+    '',
+    'Guards walk the floors. Go over them across a roof, under them through a tunnel, or wait on a rope.',
+    'Clay holds. Loam counts one. Gravel counts double. An unshored span over three caves in — loudly.',
+  ] : [
+    'The counting house stands cut open before you: three storeys, a street, and the earth beneath.',
+    'The strongbox waits in the ground-floor vault. Reach it, then get back to the lit alley (right).',
+    '',
+    'A / D  run        W / S  climb ladders, ropes & shafts, or drop through a hole    1-4 / wheel  speed',
+    'E  interact / dig (face a wall or stand over the dirt)      F  probe      T  shore      G  dump spoil',
+    'R  drop a rope down a shaft, or smash a window (loud)       ESC  stop        move to cancel a dig',
+    '',
+    'Guards walk the floors. Cross a roof above them, tunnel beneath them, or hang on a rope till they pass.',
+    'Clay holds. Loam counts one. Gravel counts double. An unshored span over three caves in — loudly.',
+  ];
+  let y=168; for(const l of L){ ctx.fillText(l, 90, y); y+=24; }
+  ctx.textAlign='center'; ctx.fillStyle=PAL.sodium; ctx.font='15px monospace';
+  ctx.fillText(isTouchDevice?'— tap to begin the night —':'— press ENTER to begin the night —', CW/2, y+18);
+}
+
+function drawEnd(escaped){
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.fillStyle=PAL.void; ctx.globalAlpha=0.86; ctx.fillRect(0,0,CW,CH); ctx.globalAlpha=1; ctx.textAlign='center';
+  if(!escaped){ ctx.fillStyle=PAL.oxide; ctx.font='bold 40px monospace'; ctx.fillText('TAKEN',CW/2,220);
+    ctx.fillStyle=PAL.chalk; ctx.font='14px monospace'; ctx.fillText(stats.cause||'The night ends in irons.',CW/2,258);
+    ctx.fillStyle=PAL.draft; ctx.fillText(touch.used?'tap to run the job again':'press R to run the job again',CW/2,300); return; }
+  ctx.fillStyle=PAL.verd; ctx.font='bold 38px monospace'; ctx.fillText('THE FENCE',CW/2,150);
+  ctx.font='14px monospace'; let mult=1; const rows=[]; rows.push(['take',`${player.lootVal} coin`]);
+  if(stats.ghost){ mult*=1.5; rows.push(['GHOST — no guard ever stirred','×1.5']); }
+  rows.push(['BLOODLESS — no bodies','×1.3']); mult*=1.3;
+  const clean=!stats.snapped&&!stats.glass&&!stats.collapsed;
+  if(clean){ mult*=1.25; rows.push(['CLEAN — no evidence','×1.25']); }
+  else { const ev=[]; if(stats.snapped) ev.push('a snapped pick'); if(stats.glass) ev.push('broken glass'); if(stats.collapsed) ev.push('a caved tunnel');
+    rows.push([`evidence: ${ev.join(', ')}`,'—']); }
+  const xp=Math.round((player.lootVal/10)*mult);
+  let y=204; ctx.fillStyle=PAL.chalk; for(const [a,b] of rows){ ctx.textAlign='left'; ctx.fillText(a,300,y); ctx.textAlign='right'; ctx.fillText(b,660,y); y+=26; }
+  ctx.textAlign='center'; ctx.fillStyle=PAL.sodium; ctx.font='bold 20px monospace'; ctx.fillText(`${xp} XP`,CW/2,y+14);
+  ctx.fillStyle=PAL.draft; ctx.font='12px monospace'; ctx.fillText(`cells dug ${stats.dug} · locks picked ${stats.picked}`,CW/2,y+40);
+  ctx.fillText(touch.used?'tap for another night':'press R for another night',CW/2,y+70);
 }
 
 // ============================================================
@@ -1751,10 +1318,7 @@ function frame(t){
 function boot(){
   canvas = document.getElementById('g');
   ctx = canvas.getContext('2d');
-  resetRun();
-  mode = 'title';
-  visNow = new Set();
-
+  resetRun(); mode='title';
   document.addEventListener('keydown', onKeyDown);
   document.addEventListener('keyup', onKeyUp);
   canvas.addEventListener('wheel', onWheel, { passive:false });
@@ -1762,36 +1326,28 @@ function boot(){
   canvas.addEventListener('touchmove', onTouchMove, { passive:false });
   canvas.addEventListener('touchend', onTouchEnd, { passive:false });
   canvas.addEventListener('touchcancel', onTouchEnd, { passive:false });
-  canvas.addEventListener('contextmenu', e => e.preventDefault && e.preventDefault());
-  canvas.addEventListener('mousemove', e => {
-    const r = canvas.getBoundingClientRect();
-    mouse.x = (e.clientX - r.left) * (VIEW_W / r.width);
-    mouse.y = (e.clientY - r.top) * (CANVAS_H / r.height);
-  });
-  canvas.addEventListener('mousedown', () => {
-    ac();
-    if(mode==='title') mode='play';
-    else if(mode==='caught'||mode==='escaped'){ resetRun(); mode='play'; }
-  });
+  canvas.addEventListener('contextmenu', e=>e.preventDefault&&e.preventDefault());
+  canvas.addEventListener('mousemove', e=>{ const r=canvas.getBoundingClientRect(); mouse.x=(e.clientX-r.left)*(CW/r.width); mouse.y=(e.clientY-r.top)*(CH/r.height); });
+  canvas.addEventListener('mousedown', ()=>{ ac(); if(mode==='title') mode='play'; else if(mode==='caught'||mode==='escaped'){ resetRun(); mode='play'; } });
+  let last=performance.now();
+  function frame(now){ let dt=(now-last)/1000; last=now; if(dt>0.05) dt=0.05; step(dt); render(); requestAnimationFrame(frame); }
   requestAnimationFrame(frame);
 }
 
-if(typeof window !== 'undefined'){
+if(typeof window!=='undefined'){
   window.SPOIL = {
     boot, step, resetRun,
-    get player(){ return player; }, get guards(){ return guards; },
-    get mode(){ return mode; }, set mode(m){ mode = m; },
-    get sub(){ return sub; }, get surf(){ return surf; },
-    keys, emitSound, tryInteract, computeFOV, findPath, playerCell,
-    startAction: a => startAction(a), get action(){ return action; },
-    get stats(){ return stats; },
-    get lock(){ return lock; }, set lock(v){ lock = v; },
-    mouse, touch, onTouchStart, onTouchMove, onTouchEnd, buildTouchButtons,
-    get touchButtons(){ return touchButtons; },
+    get player(){ return player; }, get guards(){ return guards; }, get mode(){ return mode; }, set mode(v){ mode=v; },
+    get grid(){ return grid; }, get mat(){ return mat; }, get dug(){ return dug; }, get action(){ return action; },
+    get shored(){ return shored; }, get probed(){ return probed; }, get floorType(){ return floorType; }, get lightmap(){ return lightmap; },
+    get stats(){ return stats; }, get lock(){ return lock; }, set lock(v){ lock=v; },
+    get doors(){ return doors; }, get loot(){ return loot; }, get ropes(){ return ropes; },
+    keys, mouse, touch, tryInteract, startAction, emitSound, handlePress,
+    onTouchStart, onTouchMove, onTouchEnd, buildTouchButtons, get touchButtons(){ return touchButtons; },
+    idx, W, H, T, CW, CH, VW, VH, HUD_H,
   };
-  if(typeof document !== 'undefined' && document.getElementById && document.getElementById('g')) boot();
-  else if(typeof document !== 'undefined' && document.addEventListener)
-    document.addEventListener('DOMContentLoaded', boot);
+  if(typeof document!=='undefined' && document.getElementById && document.getElementById('g')) boot();
+  else if(typeof document!=='undefined' && document.addEventListener) document.addEventListener('DOMContentLoaded', boot);
 }
 
 </script>

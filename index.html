@@ -135,6 +135,7 @@ let ropes;           // Set of cells with a deployed/there rope
 let lamps, loot, guards, lightmap, exitPx;
 let exploredSet, visSet;
 let player, mode, msgState, floaters, rings, shake, stats, cam, gameT;
+let tutMsg={text:'',t:0}, tutSeen=new Set();
 let lock, action;
 
 function fill(x0,y0,x1,y1,ch){ for(let y=y0;y<=y1;y++) for(let x=x0;x<=x1;x++) if(inb(x,y)) grid[idx(x,y)]=ch; }
@@ -440,11 +441,12 @@ function resetRun(){
   };
   exploredSet=new Set(); visSet=new Set();
   rings=[]; floaters=[]; shake=0; gameT=0;
-  msgState={text:'',t:0}; lock=null; action=null;
+  msgState={text:'',t:0}; lock=null; action=null; tutMsg={text:'',t:0};
   cam={x:player.x, y:player.y};
   stats={ ghost:true, snapped:false, glass:false, collapsed:false, alerted:false, dug:0, picked:0, cause:'' };
 }
 function msg(t){ msgState={text:t,t:4}; }
+function tut(id,text){ if(tutSeen.has(id)) return; tutSeen.add(id); tutMsg={text,t:6}; }
 function floater(x,y,text,col){ floaters.push({x,y,text,col:col||PAL.chalk,t:2.2}); }
 
 const GRAV = 900, TERMV = 520, JUMP = 260;
@@ -843,13 +845,48 @@ function step(dt){
   for(const r of rings) r.t-=dt; rings=rings.filter(r=>r.t>0);
   for(const f of floaters){ f.t-=dt; f.y-=dt*10; } floaters=floaters.filter(f=>f.t>0);
   if(msgState.t>0) msgState.t-=dt;
+  if(tutMsg.t>0) tutMsg.t-=dt;
   if(mode!=='play'){ return; }
   if(lock){ lockUpdate(dt); updateAction(0); }
-  else { playerUpdate(dt); }
+  else { playerUpdate(dt); tutorialTick(); }
   for(const g of guards) guardUpdate(g,dt);
   // vision / explored
   visSet = computeVis();
   for(const i of visSet) exploredSet.add(i);
+}
+
+// Contextual, one-at-a-time hints that appear as you meet each mechanic — no wall of text.
+function tutorialTick(){
+  if(!player) return;
+  const T_=touch.used;
+  const mv = T_ ? '\u25C0 \u25B6 walk' : 'A / D walk';
+  const cl = T_ ? '\u25B2 \u25BC climb' : 'W / S climb';
+  const act = T_ ? 'ACT' : 'E';
+  const sneak = T_ ? 'SNEAK' : 'Shift';
+
+  tut('move', `${mv}. Head for the counting house.`);
+
+  const c=pcell(), fi=faceCell();
+  if(climbable(c)) tut('climb', `${cl} ladders and ropes.`);
+  const d=doors.get(fi);
+  if(d && d.locked && !d.open) tut('lock', `Locked. Hold ${act} to pick it — keep tension and settle each pin.`);
+  else if(d && !d.open) tut('door', `Press ${act} to open the door.`);
+  if(fi>=0 && grid[fi]==='N' && !openWin.has(fi) && !glass.has(fi)) tut('window', `A window. Hold ${act} to cut the pane and slip in.`);
+  // on the street grate
+  { const sx=(player.x/T)|0, sy=((player.y+TIERS[player.tier].h*0.5+3)/T)|0;
+    if(inb(sx,sy)&&floorType[idx(sx,sy)]==='grate') tut('grate', `Press ${act} to drop through the grate into the sewer.`); }
+  // underground, facing diggable earth
+  if(belowGround() && fi>=0 && grid[fi]==='E' && !dug[fi] && mat[fi]!=='K')
+    tut('dig', `Hold ${act} to dig. Tunnel up beneath the vault.`);
+  // weak boards overhead
+  { const ax=(player.x/T)|0, ay=((player.y/T)|0)-1; if(inb(ax,ay)&&grid[idx(ax,ay)]==='w') tut('digup', `Boards above. Hold ${act} to break up into the vault.`); }
+  // a guard in view
+  for(const g of guards){ const gi=idx((g.x/T)|0,(g.y/T)|0);
+    if(visSet.has(gi) && Math.hypot(player.x-g.x,player.y-g.y)<T*8){ tut('guard', `A guard. They only see the way they face — ${sneak} or slip behind.`); break; } }
+  // facing the strongbox
+  if(loot.some(l=>!l.taken&&l.type==='box'&&idx(l.x,l.y)===fi)) tut('box', `The strongbox. Hold ${act} to empty it, then run for the lit alley.`);
+  // has the loot, remind to escape
+  if(loot.some(l=>l.type==='box'&&l.taken)) tut('escape', `You have the take. Get back to the lit alley on the right.`);
 }
 function computeVis(){
   const vis=new Set(); const px=player.x/T, py=player.y/T;
@@ -962,6 +999,8 @@ function render(){
   ctx.restore();
 
   drawVignette();
+  drawObjective();
+  drawTutorial();
   drawHUD();
   if(lock) drawLock();
   buildTouchButtons(); drawTouchUI();
@@ -1023,6 +1062,34 @@ function drawVignette(){
   const vg=ctx.createRadialGradient(CW/2,gh*0.5, gh*0.30, CW/2,gh*0.5, gh*0.85);
   vg.addColorStop(0,'rgba(0,0,0,0)'); vg.addColorStop(1,'rgba(0,0,0,0.34)');
   ctx.fillStyle=vg; ctx.fillRect(0,0,CW,gh);
+}
+
+function drawObjective(){
+  if(mode!=='play') return;
+  ctx.setTransform(1,0,0,1,0,0);
+  const got = loot.some(l=>l.type==='box'&&l.taken);
+  const txt = got ? 'ESCAPE \u2014 reach the lit alley on the right' : 'GOAL \u2014 reach the strongbox in the ground-floor vault';
+  ctx.textAlign='center'; ctx.textBaseline='alphabetic';
+  ctx.font='11px monospace'; ctx.fillStyle=got?'rgba(78,156,134,0.9)':'rgba(120,133,150,0.85)';
+  ctx.fillText(txt, CW/2, 22);
+  ctx.textAlign='left';
+}
+
+function drawTutorial(){
+  if(mode!=='play' || tutMsg.t<=0) return;
+  ctx.setTransform(1,0,0,1,0,0);
+  const a=clamp(tutMsg.t,0,1);
+  ctx.font='13px monospace'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  const tw=ctx.measureText(tutMsg.text).width|0;
+  const w=Math.max(220, tw+44), h=38, x=(CW-w)/2, y=40;
+  ctx.globalAlpha=a*0.92;
+  roundRect(x,y,w,h,10); ctx.fillStyle='rgba(14,18,26,0.96)'; ctx.fill();
+  ctx.lineWidth=1.5; ctx.strokeStyle=PAL.sodium; ctx.stroke();
+  // little lightbulb dot
+  ctx.fillStyle=PAL.sodium; ctx.beginPath(); ctx.arc(x+18,y+h/2,4,0,TAU); ctx.fill();
+  ctx.globalAlpha=a;
+  ctx.fillStyle=PAL.chalk; ctx.fillText(tutMsg.text, CW/2+8, y+h/2+1);
+  ctx.globalAlpha=1; ctx.lineWidth=1; ctx.textAlign='left'; ctx.textBaseline='alphabetic';
 }
 
 function cellLit(i,x,y){
@@ -1439,34 +1506,59 @@ function drawTouchUI(){
 
 function drawTitle(){
   ctx.setTransform(1,0,0,1,0,0);
-  ctx.fillStyle=PAL.void; ctx.globalAlpha=0.9; ctx.fillRect(0,0,CW,CH); ctx.globalAlpha=1;
-  ctx.textAlign='center'; ctx.fillStyle=PAL.chalk; ctx.font='bold 52px monospace';
-  ctx.fillText('S P O I L', CW/2, 96);
+  const gh=CH-HUD_H;
+  // opaque backdrop (no scene bleed) with a soft night gradient
+  const bg=ctx.createLinearGradient(0,0,0,CH);
+  bg.addColorStop(0,'#0d1420'); bg.addColorStop(0.6,'#0A0C11'); bg.addColorStop(1,'#080a0e');
+  ctx.fillStyle=bg; ctx.fillRect(0,0,CW,CH);
+  // moon
+  const mg=ctx.createRadialGradient(CW*0.8,110,3, CW*0.8,110,90);
+  mg.addColorStop(0,'rgba(226,232,244,0.7)'); mg.addColorStop(0.3,'rgba(190,204,230,0.22)'); mg.addColorStop(1,'rgba(190,204,230,0)');
+  ctx.fillStyle=mg; ctx.beginPath(); ctx.arc(CW*0.8,110,90,0,TAU); ctx.fill();
+  ctx.fillStyle='#e4eaf6'; ctx.beginPath(); ctx.arc(CW*0.8,110,16,0,TAU); ctx.fill();
+
+  // a small house-in-cross-section vignette, centered low
+  drawTitleHouse(CW/2, gh*0.66);
+
+  ctx.textAlign='center'; ctx.textBaseline='alphabetic';
+  ctx.fillStyle=PAL.chalk; ctx.font='bold 54px monospace';
+  ctx.fillText('S P O I L', CW/2, 118);
   ctx.font='13px monospace'; ctx.fillStyle=PAL.draft;
-  ctx.fillText('a house in cross-section — rob it from any angle', CW/2, 124);
-  ctx.textAlign='left'; ctx.fillStyle=PAL.chalk; ctx.font='12px monospace';
-  const L = isTouchDevice ? [
-    'The counting house stands cut open: three storeys, a street, and the earth beneath.',
-    'Get to the strongbox in the ground-floor vault, then back out to the lit alley on the right.',
-    '',
-    '\u25C0 \u25B6   walk        \u25B2 \u25BC   climb ladders & ropes (or drop through the grate)',
-    'ACT    open doors, pick locks, cut a window, grab loot, and dig the earth you face',
-    'SNEAK  move slow and quiet, and squeeze under low gaps',
-    '',
-    'Guards patrol the floors. Slip over them, tunnel under them, or wait for them to pass.',
-  ] : [
-    'The counting house stands cut open: three storeys, a street, and the earth beneath.',
-    'Get to the strongbox in the ground-floor vault, then back out to the lit alley (right).',
-    '',
-    'A / D  walk        W / S  climb ladders & ropes, or drop through the grate',
-    'E  act — open doors, pick locks, cut a window, grab loot, dig the earth you face',
-    'SHIFT  sneak (slow, quiet, low)        ESC  stop a dig',
-    '',
-    'Guards patrol the floors. Slip over them, tunnel under them, or wait for them to pass.',
-  ];
-  let y=170; for(const l of L){ ctx.fillText(l, 100, y); y+=26; }
-  ctx.textAlign='center'; ctx.fillStyle=PAL.sodium; ctx.font='15px monospace';
-  ctx.fillText(isTouchDevice?'— tap to begin the night —':'— press ENTER to begin the night —', CW/2, y+18);
+  ctx.fillText('a house in cross-section \u2014 rob it from any angle', CW/2, 146);
+
+  // one centered line of essential controls, then let the game teach the rest
+  ctx.font='12px monospace'; ctx.fillStyle='rgba(120,133,150,0.9)';
+  ctx.fillText(isTouchDevice ? '\u25C0 \u25B6 move    \u25B2 \u25BC climb    ACT interact    SNEAK to hide'
+                             : 'A / D move    W / S climb    E interact    SHIFT sneak', CW/2, 178);
+
+  const blink=0.6+0.4*Math.sin(gameT*3);
+  ctx.globalAlpha=blink; ctx.fillStyle=PAL.sodium; ctx.font='16px monospace';
+  ctx.fillText(isTouchDevice?'\u2014 tap to begin the night \u2014':'\u2014 press ENTER to begin the night \u2014', CW/2, gh-40);
+  ctx.globalAlpha=1;
+}
+function drawTitleHouse(cx,cy){
+  // stylized 3-storey cutaway with a lit window and a figure — sets the tone
+  const w=300, h=150, x=cx-w/2, y=cy-h/2;
+  ctx.strokeStyle=PAL.draft; ctx.lineWidth=2; ctx.strokeRect(x,y,w,h);
+  ctx.fillStyle='rgba(46,66,96,0.10)'; ctx.fillRect(x,y,w,h);
+  for(let f=1;f<3;f++){ ctx.strokeStyle='rgba(46,66,96,0.7)'; ctx.beginPath(); ctx.moveTo(x,y+f*h/3); ctx.lineTo(x+w,y+f*h/3); ctx.stroke(); }
+  // street below
+  ctx.strokeStyle=PAL.draft; ctx.beginPath(); ctx.moveTo(x-40,y+h); ctx.lineTo(x+w+40,y+h); ctx.stroke();
+  // earth hatch below street
+  ctx.strokeStyle='rgba(58,47,36,0.6)'; ctx.lineWidth=1;
+  for(let i=0;i<10;i++){ const gx=x-20+i*34; ctx.beginPath(); ctx.moveTo(gx,y+h+6); ctx.lineTo(gx+10,y+h+18); ctx.stroke(); }
+  // lit vault window (bottom-right) with glow
+  const vx=x+w-42, vy=y+h*5/6;
+  const vg=ctx.createRadialGradient(vx,vy,1, vx,vy,30);
+  vg.addColorStop(0,'rgba(233,162,59,0.55)'); vg.addColorStop(1,'rgba(233,162,59,0)');
+  ctx.fillStyle=vg; ctx.beginPath(); ctx.arc(vx,vy,30,0,TAU); ctx.fill();
+  ctx.fillStyle=PAL.sodium; ctx.fillRect(vx-5,vy-6,10,12);
+  // a tiny burglar figure on the top floor
+  const fx=x+50, fy=y+h/3-2;
+  ctx.strokeStyle=PAL.chalk; ctx.lineWidth=2; ctx.beginPath();
+  ctx.moveTo(fx,fy-8); ctx.lineTo(fx,fy); ctx.moveTo(fx,fy); ctx.lineTo(fx-3,fy+6); ctx.moveTo(fx,fy); ctx.lineTo(fx+3,fy+6); ctx.stroke();
+  ctx.fillStyle=PAL.chalk; ctx.beginPath(); ctx.arc(fx,fy-11,2.4,0,TAU); ctx.fill();
+  ctx.lineWidth=1;
 }
 
 function drawEnd(escaped){

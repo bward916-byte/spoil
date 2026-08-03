@@ -818,10 +818,9 @@ function guardUpdate(g,dt){
 }
 function guardStayOnLane(g){
   const ly=guardLaneY(g); g.y=lerp(g.y,ly,0.4);
-  // don't walk off the edge of a floor into open air: clamp to solid floor beneath
+  // reverse only at a real ledge — open air with no floor AND no ladder/rope to stand across
   const gx=(g.x/T)|0, gy=((g.y+T*0.5+1)/T)|0;
-  if(inb(gx,gy) && !solid(idx(gx,gy))){
-    // step back
+  if(inb(gx,gy) && !solid(idx(gx,gy)) && !climbable(idx(gx,gy))){
     g.x -= g.dir*2; g.dir*=-1; g.face=g.dir;
   }
 }

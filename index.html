@@ -70,6 +70,7 @@ const SCALE = 3;                       // 3x zoom: each tile is 72 device px —
 const VW = 384, VH = 168;              // world viewport (16 x 7 tiles visible)
 const HUD_H = 72;                      // slim HUD so the short landscape view keeps its height
 const CW = VW * SCALE, CH = VH * SCALE + HUD_H; // canvas: 1152 x 576 (fills a landscape phone, ~2:1)
+const STICK = { x:168, y:372, r:76, nub:34 };   // fixed on-screen thumbstick (lower-left)
 const TAU = Math.PI * 2;
 const DIR4 = [[1,0],[-1,0],[0,1],[0,-1]];
 
@@ -471,6 +472,10 @@ function playerUpdate(dt){
   if(keys['d']||keys['arrowright']) ix+=1;
   if(keys['w']||keys['arrowup']) iy-=1;
   if(keys['s']||keys['arrowdown']) iy+=1;
+  if(touch.stickId!=null){                 // fixed thumbstick
+    if(Math.abs(touch.vec[0])>0.34) ix=sign(touch.vec[0]);
+    if(Math.abs(touch.vec[1])>0.44) iy=sign(touch.vec[1]);
+  }
   const busy = action && action.type!=='descend';
   if(busy){ ix=0; iy=0; }
   if(ix!==0) player.dir = ix;
@@ -859,15 +864,15 @@ function step(dt){
 function tutorialTick(){
   if(!player) return;
   const T_=touch.used;
-  const mv = T_ ? '\u25C0 \u25B6 walk' : 'A / D walk';
-  const cl = T_ ? '\u25B2 \u25BC climb' : 'W / S climb';
+  const mv = T_ ? 'Use the left stick to walk' : 'A / D walk';
+  const cl = T_ ? 'Push the stick up/down to climb' : 'W / S climb';
   const act = T_ ? 'ACT' : 'E';
   const sneak = T_ ? 'SNEAK' : 'Shift';
 
   tut('move', `${mv}. Head for the counting house.`);
 
   const c=pcell(), fi=faceCell();
-  if(climbable(c)) tut('climb', `${cl} ladders and ropes.`);
+  if(climbable(c)) tut('climb', T_? `${cl} ladders and ropes.` : `${cl} ladders and ropes.`);
   const d=doors.get(fi);
   if(d && d.locked && !d.open) tut('lock', `Locked. Hold ${act} to pick it — keep tension and settle each pin.`);
   else if(d && !d.open) tut('door', `Press ${act} to open the door.`);
@@ -907,7 +912,7 @@ function belowGround(){ return (player.y/T)|0 > 18; }
 const keys={};
 const mouse={ x:VW/2, y:VH/2 };
 const isTouchDevice = (typeof navigator!=='undefined'&&navigator.maxTouchPoints>0)||(typeof window!=='undefined'&&'ontouchstart' in window);
-const touch={ used:false, stick:null, vec:[0,0], mag:0, holds:new Map(), pickId:null, tension:false };
+const touch={ used:false, stickId:null, nub:[STICK.x,STICK.y], vec:[0,0], mag:0, holds:new Map(), pickId:null, tension:false };
 let touchButtons=[];
 
 function onKeyDown(e){
@@ -935,17 +940,18 @@ function buildTouchButtons(){
   touchButtons=[]; if(!touch.used||mode!=='play') return;
   const B=(x,y,r,k,label,big)=>touchButtons.push({x,y,r,k,label,big});
   if(lock){ B(1045,455,60,'tension','TENSION',true); B(72,64,34,'escape','LEAVE'); return; }
-  // fixed directional pad (left side) — left is always left, no drift
-  B(95,380,44,'arrowleft','\u25C0');
-  B(235,380,44,'arrowright','\u25B6');
-  B(165,300,42,'arrowup','\u25B2');
-  B(165,458,42,'arrowdown','\u25BC');
-  // action + sneak (right side)
   B(1058,455,54,'e','ACT',true);
   B(930,455,44,'sneak','SNEAK');
   if(action) B(72,64,34,'escape','STOP');
 }
 function canvasXY(t){ const r=canvas.getBoundingClientRect(); return [ (t.clientX-r.left)*(CW/r.width), (t.clientY-r.top)*(CH/r.height) ]; }
+function stickSet(cx,cy){
+  let dx=cx-STICK.x, dy=cy-STICK.y; const R=STICK.r; const d=Math.hypot(dx,dy);
+  if(d>R){ dx=dx/d*R; dy=dy/d*R; }
+  touch.nub=[STICK.x+dx, STICK.y+dy];
+  touch.vec=[dx/R, dy/R];                 // each axis -1..1, measured from the FIXED centre
+}
+function stickRelease(){ touch.stickId=null; touch.vec=[0,0]; touch.nub=[STICK.x,STICK.y]; }
 function goFullscreen(){ try{ const el=document.documentElement; if(el&&el.requestFullscreen&&!document.fullscreenElement){ el.requestFullscreen().then(()=>{ try{ screen.orientation&&screen.orientation.lock&&screen.orientation.lock('landscape').catch(()=>{});}catch(_){}}).catch(()=>{}); } }catch(_){} }
 function onTouchStart(e){ e.preventDefault(); touch.used=true; ac();
   if(mode==='title'){ goFullscreen(); mode='play'; return; }
@@ -955,11 +961,14 @@ function onTouchStart(e){ e.preventDefault(); touch.used=true; ac();
     if(hit){ if(hit.k==='tension'){ touch.tension=true; touch.holds.set(t.identifier,'tension'); }
       else { touch.holds.set(t.identifier,hit.k); keys[hit.k]=true; handlePress(hit.k); } }
     else if(lock){ touch.pickId=t.identifier; mouse.x=cx; }
+    else if(cx < CW*0.5 && touch.stickId==null){ touch.stickId=t.identifier; stickSet(cx,cy); }
   }
 }
 function onTouchMove(e){ e.preventDefault(); for(const t of e.changedTouches){ const [cx,cy]=canvasXY(t);
-  if(t.identifier===touch.pickId) mouse.x=clamp(cx,0,CW); } }
+  if(t.identifier===touch.stickId) stickSet(cx,cy);
+  else if(t.identifier===touch.pickId) mouse.x=clamp(cx,0,CW); } }
 function onTouchEnd(e){ e.preventDefault(); for(const t of e.changedTouches){
+  if(t.identifier===touch.stickId) stickRelease();
   if(t.identifier===touch.pickId) touch.pickId=null;
   const k=touch.holds.get(t.identifier);
   if(k!==undefined){ touch.holds.delete(t.identifier);
@@ -1332,7 +1341,7 @@ function drawHUD(){
   // movement state
   ctx.font='bold 15px monospace'; ctx.fillStyle=player.sneak?PAL.verd:PAL.chalk;
   ctx.fillText(player.sneak?'SNEAKING':'WALKING', 24, y0+30);
-  ctx.font='10px monospace'; ctx.fillStyle=PAL.draft; ctx.fillText('move  \u25C0 \u25B6   climb  \u25B2 \u25BC', 24, y0+52);
+  ctx.font='10px monospace'; ctx.fillStyle=PAL.draft; ctx.fillText(isTouchDevice?'left stick: move & climb':'A/D move   W/S climb', 24, y0+52);
 
   // light gem
   const lit=lightAtPx(player.x,player.y);
@@ -1495,26 +1504,33 @@ function drawLock(){
 function drawTouchUI(){
   if(!touch.used) return;
   ctx.setTransform(1,0,0,1,0,0);
-  const dirs={arrowleft:'L',arrowright:'R',arrowup:'U',arrowdown:'D'};
+  // fixed thumbstick (only during play, not while picking a lock)
+  if(mode==='play' && !lock){
+    const active=touch.stickId!=null;
+    // base ring
+    ctx.globalAlpha=active?0.28:0.20; ctx.fillStyle=PAL.draft;
+    ctx.beginPath(); ctx.arc(STICK.x,STICK.y,STICK.r,0,TAU); ctx.fill();
+    ctx.globalAlpha=active?0.8:0.55; ctx.strokeStyle=PAL.chalk; ctx.lineWidth=2.5;
+    ctx.beginPath(); ctx.arc(STICK.x,STICK.y,STICK.r,0,TAU); ctx.stroke();
+    // faint direction ticks
+    ctx.globalAlpha=0.3; ctx.strokeStyle=PAL.chalk; ctx.lineWidth=1.5;
+    for(let a=0;a<4;a++){ const th=a*Math.PI/2; const r0=STICK.r-12,r1=STICK.r-4;
+      ctx.beginPath(); ctx.moveTo(STICK.x+Math.cos(th)*r0,STICK.y+Math.sin(th)*r0);
+      ctx.lineTo(STICK.x+Math.cos(th)*r1,STICK.y+Math.sin(th)*r1); ctx.stroke(); }
+    // nub
+    const nx=touch.nub[0], ny=touch.nub[1];
+    ctx.globalAlpha=active?0.55:0.4; ctx.fillStyle=active?PAL.verd:PAL.draft;
+    ctx.beginPath(); ctx.arc(nx,ny,STICK.nub,0,TAU); ctx.fill();
+    ctx.globalAlpha=active?1:0.7; ctx.strokeStyle=PAL.chalk; ctx.lineWidth=2.5;
+    ctx.beginPath(); ctx.arc(nx,ny,STICK.nub,0,TAU); ctx.stroke();
+    ctx.globalAlpha=1; ctx.lineWidth=1;
+  }
+  // action buttons
   for(const b of touchButtons){
     const held=[...touch.holds.values()].includes(b.k)||(b.k==='tension'&&touch.tension)||(b.k==='sneak'&&player&&player.sneak);
-    const dir=dirs[b.k];
-    // button disc — D-pad a touch more visible than action buttons
-    ctx.globalAlpha=held?0.55:(dir?0.32:0.24); ctx.fillStyle=held?PAL.verd:PAL.draft;
-    ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,TAU); ctx.fill();
-    ctx.globalAlpha=held?1:0.7; ctx.strokeStyle=PAL.chalk; ctx.lineWidth=2.5;
-    ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,TAU); ctx.stroke();
-    if(dir){
-      // draw an actual triangle (never depends on a font glyph)
-      const s=b.r*0.42; ctx.fillStyle=held?PAL.chalk:'rgba(191,203,217,0.95)'; ctx.beginPath();
-      if(dir==='L'){ ctx.moveTo(b.x-s,b.y); ctx.lineTo(b.x+s*0.7,b.y-s); ctx.lineTo(b.x+s*0.7,b.y+s); }
-      else if(dir==='R'){ ctx.moveTo(b.x+s,b.y); ctx.lineTo(b.x-s*0.7,b.y-s); ctx.lineTo(b.x-s*0.7,b.y+s); }
-      else if(dir==='U'){ ctx.moveTo(b.x,b.y-s); ctx.lineTo(b.x-s,b.y+s*0.7); ctx.lineTo(b.x+s,b.y+s*0.7); }
-      else { ctx.moveTo(b.x,b.y+s); ctx.lineTo(b.x-s,b.y-s*0.7); ctx.lineTo(b.x+s,b.y-s*0.7); }
-      ctx.closePath(); ctx.fill();
-    } else {
-      ctx.fillStyle=PAL.chalk; ctx.font=(b.big?'bold 18px':'bold 13px')+' monospace'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(b.label,b.x,b.y);
-    }
+    ctx.globalAlpha=held?0.5:0.24; ctx.fillStyle=held?PAL.verd:PAL.draft; ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,TAU); ctx.fill();
+    ctx.globalAlpha=held?0.95:0.65; ctx.strokeStyle=PAL.chalk; ctx.lineWidth=2.5; ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,TAU); ctx.stroke();
+    ctx.fillStyle=PAL.chalk; ctx.font=(b.big?'bold 18px':'bold 13px')+' monospace'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(b.label,b.x,b.y);
     ctx.globalAlpha=1; ctx.lineWidth=1; }
   ctx.textBaseline='alphabetic'; ctx.textAlign='left';
 }
@@ -1543,7 +1559,7 @@ function drawTitle(){
 
   // one centered line of essential controls, then let the game teach the rest
   ctx.font='12px monospace'; ctx.fillStyle='rgba(120,133,150,0.9)';
-  ctx.fillText(isTouchDevice ? '\u25C0 \u25B6 move    \u25B2 \u25BC climb    ACT interact    SNEAK to hide'
+  ctx.fillText(isTouchDevice ? 'LEFT STICK  move & climb     ACT  interact     SNEAK  hide'
                              : 'A / D move    W / S climb    E interact    SHIFT sneak', CW/2, 178);
 
   const blink=0.6+0.4*Math.sin(gameT*3);
@@ -1619,7 +1635,7 @@ function boot(){
   // (stored in canvas pixels) becomes stale and movement directions can go haywire.
   // Drop all live input so the player starts clean in the new layout.
   const clearInput=()=>{ for(const k in keys) keys[k]=false;
-    touch.stick=null; touch.vec=[0,0]; touch.mag=0; touch.tension=false; touch.pickId=null; touch.holds.clear();
+    touch.stickId=null; touch.vec=[0,0]; touch.mag=0; touch.nub=[STICK.x,STICK.y]; touch.tension=false; touch.pickId=null; touch.holds.clear();
     if(player) player.vx=0; };
   if(typeof window!=='undefined' && window.addEventListener){
     window.addEventListener('resize', clearInput);

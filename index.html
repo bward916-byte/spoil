@@ -433,7 +433,7 @@ function resetRun(){
   genLevel();
   player = {
     x: 3*T+T/2, y: (18-1)*T+T/2,     // on the street, left end (groundY-1 = 17)
-    vx:0, vy:0, onGround:true, climbing:false, tier:2, dir:1,
+    vx:0, vy:0, onGround:true, climbing:false, tier:2, sneak:false, dir:1,
     stamina:100, spoil:0, picks:3, probes:10, timbers:6, ropesLeft:3,
     lootVal:0, stepT:0, breathT:0, lowT:0, coyote:0, walkPhase:0, prevH:TIERS[2].h,
   };
@@ -461,17 +461,13 @@ function onClimb(){
 }
 
 function playerUpdate(dt){
+  player.tier = player.sneak ? 1 : 2;    // two states only: walk or sneak
   const tier = TIERS[player.tier];
   let ix=0, iy=0;
   if(keys['a']||keys['arrowleft']) ix-=1;
   if(keys['d']||keys['arrowright']) ix+=1;
   if(keys['w']||keys['arrowup']) iy-=1;
   if(keys['s']||keys['arrowdown']) iy+=1;
-  if(touch.stick && touch.mag>0){ ix=Math.abs(touch.vec[0])>0.3?sign(touch.vec[0]):0; iy=Math.abs(touch.vec[1])>0.3?sign(touch.vec[1]):0;
-    // horizontal magnitude sets tier
-    const hm=Math.abs(touch.vec[0])*touch.mag;
-    if(ix!==0) player.tier = hm<0.4?1: hm<0.72?2:3;
-  }
   const busy = action && action.type!=='descend';
   if(busy){ ix=0; iy=0; }
   if(ix!==0) player.dir = ix;
@@ -487,11 +483,6 @@ function playerUpdate(dt){
       if(inb(tx,ty) && solid(idx(tx,ty))){ player.y = ty*T + T + curH*0.5 + 0.1; break; } }
     player.prevH = curH;
   }
-
-  // stamina for running
-  if(player.tier===3 && ix) player.stamina=clamp(player.stamina-12*dt,0,100);
-  else if(player.tier<=1) player.stamina=clamp(player.stamina+10*dt,0,100);
-  if(player.stamina<=0 && player.tier===3){ player.tier=2; msg('Winded.'); }
 
   const c = pcell();
   const climbHere = climbable(c);
@@ -547,10 +538,6 @@ function playerUpdate(dt){
       if(loud>0.4){ emitSound((player.x/T)|0,(player.y/T)|0,loud); sfx.step(loud); }
     }
   }
-  // heavy breathing after a run
-  if(player.tier===3 && speed>60) player.breathT=3.5;
-  else if(player.breathT>0){ player.breathT-=dt; player.lowT-=dt;
-    if(player.lowT<=0){ player.lowT=1; emitSound((player.x/T)|0,(player.y/T)|0,2); } }
 
   // ---- loot pickup ----
   for(const l of loot){
@@ -649,7 +636,6 @@ function tryInteract(){
   else { const dx=(player.x/T)|0, dy=((player.y+10)/T)|0; if(inb(dx,dy)&&diggable(dx,dy)&&!dug[idx(dx,dy)]) tgt=idx(dx,dy); }
   if(tgt>=0){
     const m=MAT[mat[tgt]];
-    if(player.spoil>=spoilCap()){ msg('Too much spoil — dump it in the sewer (G).'); return; }
     startAction({ type:'dig', total:m.t, cell:tgt, matk:mat[tgt], tick:0, label:`digging ${m.name}` });
     return;
   }
@@ -662,7 +648,6 @@ function updateAction(dt){
   if(action.type==='dig'){
     action.tick+=dt;
     if(action.tick>=0.7){ action.tick-=0.7; const n=MAT[action.matk].n; if(n>0){ const [x,y]=cellXY(action.cell); emitSound(x,y,n*3); sfx.dig(n); } }
-    player.stamina=clamp(player.stamina-6*dt,0,100);
   } else if(action.type==='digup'){
     action.tick+=dt;
     if(action.tick>=0.9){ action.tick-=0.9; const [x,y]=cellXY(action.cell); emitSound(x,y,6); sfx.dig(2); }
@@ -674,7 +659,7 @@ function completeAction(){
   switch(a.type){
     case 'cutglass': openWin.add(a.cell); emitSound(a.cell%W,(a.cell/W)|0,2); sfx.click(); msg('The pane lifts free. The window is open.'); break;
     case 'lootbox': a.box.taken=true; player.lootVal+=a.box.val; emitSound(a.box.x,a.box.y,2); sfx.coin(); msg(`The strongbox is yours. +${a.box.val}`); break;
-    case 'dig': { const c=a.cell; dug[c]=true; probed[c]=true; player.spoil++; stats.dug++; sfx.dig(2); collapseCheck(c); break; }
+    case 'dig': { const c=a.cell; dug[c]=true; shored[c]=true; probed[c]=true; stats.dug++; sfx.dig(2); break; }
     case 'digup': { const c=a.cell; grid[c]=' '; dug[c]=true; emitSound(c%W,(c/W)|0,5); msg('The boards give. Lamplight spills down — you are under the vault.'); break; }
     case 'probe': { const c=a.cell; probed[c]=true; const [cx,cy]=cellXY(c);
       for(const [dx,dy] of DIR4) if(inb(cx+dx,cy+dy)) probed[idx(cx+dx,cy+dy)]=true;
@@ -889,77 +874,54 @@ let touchButtons=[];
 
 function onKeyDown(e){
   const k=e.key.toLowerCase();
-  if(!keys[k]){ keys[k]=true; }
+  const fresh=!keys[k];
+  keys[k]=true;
   ac();
   if([' ','arrowup','arrowdown','arrowleft','arrowright'].includes(k)) e.preventDefault();
   if(mode==='title'){ if(k==='enter'||k===' ') mode='play'; return; }
   if(mode==='caught'||mode==='escaped'){ if(k==='r'||k==='enter'){ resetRun(); mode='play'; } return; }
   if(mode!=='play') return;
-  handlePress(k);
+  if(fresh) handlePress(k);
 }
 function handlePress(k){
   if(lock){ if(k==='escape'){ lock=null; msg('You ease off the lock.'); } return; }
   if(k==='escape'){ cancelAction(); return; }
-  if(k>='1'&&k<='4'){ player.tier=+k-1; return; }
+  if(k==='sneak'||k==='shift'){ player.sneak=!player.sneak; msg(player.sneak?'Sneaking — quiet and low.':'Walking.'); return; }
   if(k==='e'||k==='enter'){ tryInteract(); return; }
-  if(k==='f'){ // probe (underground, facing earth)
-    const fi=faceCell(); if(fi>=0 && grid[fi]==='E' && !dug[fi] && mat[fi]!=='K'){ if(player.probes<=0){ msg('No probe charges.'); return; } player.probes--; startAction({type:'probe',total:2.5,cell:fi,label:'probing'}); }
-    return;
-  }
-  if(k==='t'){ const c=pcell(); if(dug[c]&&!shored[c]){ if(player.timbers<=0){ msg('No timbers.'); return; } player.timbers--; shored[c]=true; sfx.thud(); msg(`Timber set. ${player.timbers} left.`); } return; }
-  if(k==='g'){ const c=pcell(); if(grid[c]==='S'){ if(player.spoil>0){ msg(`${player.spoil} spoil into the sewer. Gone.`); player.spoil=0; sfx.thud(); } else msg('Nothing to dump.'); } else msg('Dump spoil in the sewer.'); return; }
-  if(k==='r'){ // deploy rope down a shaft OR smash window
-    const fi=faceCell();
-    if(fi>=0 && grid[fi]==='N' && !openWin.has(fi) && !glass.has(fi)){ glass.add(fi); stats.glass=true; emitSound(fi%W,(fi/W)|0,17); msg('The pane shatters. The whole street heard it.'); return; }
-    // rope: if standing at a ledge with open air below
-    const bx=(player.x/T)|0, by=((player.y+12)/T)|0;
-    if(player.ropesLeft>0 && inb(bx,by) && !solid(idx(bx,by)) && !climbable(idx(bx,by))){
-      let y=by, n=0; while(y<H-1 && !solid(idx(bx,y)) && n<10){ ropes.add(idx(bx,y)); y++; n++; }
-      if(n>0){ player.ropesLeft--; sfx.thud(); msg(`Rope dropped. ${player.ropesLeft} left.`); }
-    }
-    return;
-  }
 }
 function onKeyUp(e){ const k=e.key.toLowerCase(); keys[k]=false; if(action&&action.type==='dig'&&!keys['e']) cancelAction(); }
-function onWheel(e){ if(mode!=='play'||lock) return; player.tier=clamp(player.tier+(e.deltaY>0?-1:1),0,3); e.preventDefault(); }
+function onWheel(e){ e.preventDefault(); }
 
 // ---- touch ----
 function buildTouchButtons(){
   touchButtons=[]; if(!touch.used||mode!=='play') return;
   const B=(x,y,r,k,label,big)=>touchButtons.push({x,y,r,k,label,big});
-  if(lock){ B(1045,460,60,'tension','TENSION',true); B(72,64,34,'escape','LEAVE'); return; }
-  B(1058,472,54,'e','ACT',true);
+  if(lock){ B(1045,455,60,'tension','TENSION',true); B(72,64,34,'escape','LEAVE'); return; }
+  // fixed directional pad (left side) — left is always left, no drift
+  B(95,380,44,'arrowleft','\u25C0');
+  B(235,380,44,'arrowright','\u25B6');
+  B(165,300,42,'arrowup','\u25B2');
+  B(165,458,42,'arrowdown','\u25BC');
+  // action + sneak (right side)
+  B(1058,455,54,'e','ACT',true);
+  B(930,455,44,'sneak','SNEAK');
   if(action) B(72,64,34,'escape','STOP');
-  // contextual
-  const fi=faceCell(), c=pcell();
-  if(fi>=0 && grid[fi]==='N' && !openWin.has(fi) && !glass.has(fi)) B(930,486,40,'r','SMASH');
-  if(grid[c]==='E'||belowGround()){
-    B(930,486,40,'f','PROBE'); B(1058,352,40,'t','SHORE');
-    if(grid[c]==='S'&&player.spoil>0) B(1058,236,40,'g','DUMP');
-    const bx=(player.x/T)|0, by=((player.y+12)/T)|0;
-    if(player.ropesLeft>0 && inb(bx,by) && !solid(idx(bx,by)) && !climbable(idx(bx,by))) B(930,372,38,'r','ROPE');
-  }
 }
 function canvasXY(t){ const r=canvas.getBoundingClientRect(); return [ (t.clientX-r.left)*(CW/r.width), (t.clientY-r.top)*(CH/r.height) ]; }
-function stickApply(cx,cy){ const st=touch.stick; let dx=cx-st.ox,dy=cy-st.oy; const R=92; const d=Math.hypot(dx,dy);
-  if(d>R){ dx=dx/d*R; dy=dy/d*R; } st.kx=st.ox+dx; st.ky=st.oy+dy;
-  const mag=Math.min(1,d/R); if(mag<0.16){ touch.vec=[0,0]; touch.mag=0; return; } touch.vec=[dx/(d||1),dy/(d||1)]; touch.mag=mag; }
 function goFullscreen(){ try{ const el=document.documentElement; if(el&&el.requestFullscreen&&!document.fullscreenElement){ el.requestFullscreen().then(()=>{ try{ screen.orientation&&screen.orientation.lock&&screen.orientation.lock('landscape').catch(()=>{});}catch(_){}}).catch(()=>{}); } }catch(_){} }
 function onTouchStart(e){ e.preventDefault(); touch.used=true; ac();
   if(mode==='title'){ goFullscreen(); mode='play'; return; }
   if(mode==='caught'||mode==='escaped'){ resetRun(); mode='play'; return; }
   for(const t of e.changedTouches){ const [cx,cy]=canvasXY(t); let hit=null;
-    for(const b of touchButtons) if(Math.hypot(cx-b.x,cy-b.y)<=b.r+8){ hit=b; break; }
+    for(const b of touchButtons) if(Math.hypot(cx-b.x,cy-b.y)<=b.r+10){ hit=b; break; }
     if(hit){ if(hit.k==='tension'){ touch.tension=true; touch.holds.set(t.identifier,'tension'); }
       else { touch.holds.set(t.identifier,hit.k); keys[hit.k]=true; handlePress(hit.k); } }
     else if(lock){ touch.pickId=t.identifier; mouse.x=cx; }
-    else if(cx<CW*0.42 && !touch.stick){ touch.stick={id:t.identifier,ox:cx,oy:cy,kx:cx,ky:cy}; stickApply(cx,cy); }
   }
 }
 function onTouchMove(e){ e.preventDefault(); for(const t of e.changedTouches){ const [cx,cy]=canvasXY(t);
-  if(touch.stick&&t.identifier===touch.stick.id) stickApply(cx,cy); else if(t.identifier===touch.pickId) mouse.x=clamp(cx,0,CW); } }
+  if(t.identifier===touch.pickId) mouse.x=clamp(cx,0,CW); } }
 function onTouchEnd(e){ e.preventDefault(); for(const t of e.changedTouches){
-  if(touch.stick&&t.identifier===touch.stick.id){ touch.stick=null; touch.vec=[0,0]; touch.mag=0; }
   if(t.identifier===touch.pickId) touch.pickId=null;
   const k=touch.holds.get(t.identifier);
   if(k!==undefined){ touch.holds.delete(t.identifier);
@@ -1260,34 +1222,32 @@ function drawHUD(){
   ctx.strokeStyle=PAL.draft; ctx.beginPath(); ctx.moveTo(0,y0+0.5); ctx.lineTo(CW,y0+0.5); ctx.stroke();
   ctx.textAlign='left'; ctx.textBaseline='alphabetic';
 
-  // speed tiers
-  for(let i=0;i<4;i++){ ctx.fillStyle=i===player.tier?PAL.verd:PAL.draft; ctx.fillRect(22+i*16,y0+14,12,18); }
-  ctx.fillStyle=PAL.chalk; ctx.font='13px monospace'; ctx.fillText(TIERS[player.tier].name, 22, y0+52);
+  // movement state
+  ctx.font='bold 15px monospace'; ctx.fillStyle=player.sneak?PAL.verd:PAL.chalk;
+  ctx.fillText(player.sneak?'SNEAKING':'WALKING', 24, y0+30);
+  ctx.font='10px monospace'; ctx.fillStyle=PAL.draft; ctx.fillText('move  \u25C0 \u25B6   climb  \u25B2 \u25BC', 24, y0+52);
 
   // light gem
   const lit=lightAtPx(player.x,player.y);
-  ctx.fillStyle=mix(PAL.void,PAL.sodium,lit); ctx.beginPath(); ctx.arc(132,y0+24,10,0,TAU); ctx.fill();
+  ctx.fillStyle=mix(PAL.void,PAL.sodium,lit); ctx.beginPath(); ctx.arc(258,y0+24,10,0,TAU); ctx.fill();
   ctx.strokeStyle=PAL.draft; ctx.stroke();
-  ctx.fillStyle=PAL.draft; ctx.font='10px monospace'; ctx.fillText('LIGHT',116,y0+52);
+  ctx.fillStyle=PAL.draft; ctx.font='10px monospace'; ctx.fillText(lit>0.5?'LIT':'SHADOW', 242, y0+52);
 
-  // stamina
-  ctx.fillStyle=PAL.draft; ctx.fillRect(182,y0+18,120,9); ctx.fillStyle=player.stamina<25?PAL.oxide:PAL.verd; ctx.fillRect(182,y0+18,120*player.stamina/100,9);
-  ctx.fillStyle=PAL.draft; ctx.font='10px monospace'; ctx.fillText('WIND',182,y0+52);
-
-  // inventory
+  // picks
   ctx.font='13px monospace'; ctx.fillStyle=PAL.chalk;
-  const inv=`picks ${player.picks}    probes ${player.probes}    timbers ${player.timbers}    ropes ${player.ropesLeft}    spoil ${player.spoil}/${spoilCap()}`;
-  ctx.fillText(inv, 340, y0+26);
-  ctx.fillStyle=PAL.sodium; ctx.font='bold 14px monospace'; ctx.fillText(`take  ${player.lootVal}`, 340, y0+52);
+  ctx.fillText(`lockpicks  ${player.picks}`, 340, y0+30);
 
-  // depth indicator
+  // take
+  ctx.fillStyle=PAL.sodium; ctx.font='bold 15px monospace'; ctx.fillText(`take  ${player.lootVal}`, 340, y0+52);
+
+  // depth / location, right
   const depth=((player.y/T)|0)-18;
   ctx.textAlign='right'; ctx.fillStyle=PAL.draft; ctx.font='11px monospace';
-  ctx.fillText(depth>0?`${depth} below ground`:'street level', CW-24, y0+26);
+  ctx.fillText(depth>0?`${depth} below ground`:'street level', CW-24, y0+30);
 
   // message line
   if(msgState.t>0){ ctx.globalAlpha=clamp(msgState.t,0,1); ctx.textAlign='center'; ctx.fillStyle=PAL.chalk; ctx.font='13px monospace';
-    ctx.fillText(msgState.text, CW/2, y0+60); ctx.globalAlpha=1; }
+    ctx.fillText(msgState.text, CW/2, y0+56); ctx.globalAlpha=1; }
   ctx.textAlign='left';
 }
 
@@ -1317,15 +1277,11 @@ function drawLock(){
 function drawTouchUI(){
   if(!touch.used) return;
   ctx.setTransform(1,0,0,1,0,0);
-  if(touch.stick && mode==='play' && !lock){ const st=touch.stick;
-    ctx.strokeStyle=PAL.chalk; ctx.globalAlpha=0.18; ctx.lineWidth=3;
-    ctx.beginPath(); ctx.arc(st.ox,st.oy,92,0,TAU); ctx.stroke();
-    ctx.globalAlpha=0.4; ctx.fillStyle=touch.mag>0.72&&Math.abs(touch.vec[0])>0.5?PAL.sodium:PAL.verd;
-    ctx.beginPath(); ctx.arc(st.kx,st.ky,32,0,TAU); ctx.fill(); ctx.globalAlpha=1; ctx.lineWidth=1; }
-  for(const b of touchButtons){ const held=[...touch.holds.values()].includes(b.k)||(b.k==='tension'&&touch.tension);
+  for(const b of touchButtons){
+    const held=[...touch.holds.values()].includes(b.k)||(b.k==='tension'&&touch.tension)||(b.k==='sneak'&&player&&player.sneak);
     ctx.globalAlpha=held?0.5:0.22; ctx.fillStyle=held?PAL.verd:PAL.draft; ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,TAU); ctx.fill();
     ctx.globalAlpha=held?0.95:0.6; ctx.strokeStyle=PAL.chalk; ctx.lineWidth=2.5; ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,TAU); ctx.stroke();
-    ctx.fillStyle=PAL.chalk; ctx.font=(b.big?'bold 18px':'bold 13px')+' monospace'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(b.label,b.x,b.y);
+    ctx.fillStyle=PAL.chalk; ctx.font=(b.big?'bold 18px':'bold 14px')+' monospace'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(b.label,b.x,b.y);
     ctx.globalAlpha=1; ctx.lineWidth=1; }
   ctx.textBaseline='alphabetic';
 }
@@ -1339,27 +1295,25 @@ function drawTitle(){
   ctx.fillText('a house in cross-section — rob it from any angle', CW/2, 124);
   ctx.textAlign='left'; ctx.fillStyle=PAL.chalk; ctx.font='12px monospace';
   const L = isTouchDevice ? [
-    'The counting house stands cut open before you: three storeys, a street, and the earth beneath.',
-    'The strongbox waits in the ground-floor vault. Reach it, then get back to the lit alley.',
+    'The counting house stands cut open: three storeys, a street, and the earth beneath.',
+    'Get to the strongbox in the ground-floor vault, then back out to the lit alley on the right.',
     '',
-    'LEFT THUMB   move; push up/down at a ladder, rope or shaft to climb; a small tilt is a crouch',
-    'ACT          pick locks, cut glass, empty the box, and DIG the earth you face or stand over',
-    'Underground  PROBE the dirt, SHORE a long tunnel, DUMP spoil in the sewer, drop a ROPE down a shaft',
+    '\u25C0 \u25B6   walk        \u25B2 \u25BC   climb ladders & ropes (or drop through the grate)',
+    'ACT    open doors, pick locks, cut a window, grab loot, and dig the earth you face',
+    'SNEAK  move slow and quiet, and squeeze under low gaps',
     '',
-    'Guards walk the floors. Go over them across a roof, under them through a tunnel, or wait on a rope.',
-    'Clay holds. Loam counts one. Gravel counts double. An unshored span over three caves in — loudly.',
+    'Guards patrol the floors. Slip over them, tunnel under them, or wait for them to pass.',
   ] : [
-    'The counting house stands cut open before you: three storeys, a street, and the earth beneath.',
-    'The strongbox waits in the ground-floor vault. Reach it, then get back to the lit alley (right).',
+    'The counting house stands cut open: three storeys, a street, and the earth beneath.',
+    'Get to the strongbox in the ground-floor vault, then back out to the lit alley (right).',
     '',
-    'A / D  run        W / S  climb ladders, ropes & shafts, or drop through a hole    1-4 / wheel  speed',
-    'E  interact / dig (face a wall or stand over the dirt)      F  probe      T  shore      G  dump spoil',
-    'R  drop a rope down a shaft, or smash a window (loud)       ESC  stop        move to cancel a dig',
+    'A / D  walk        W / S  climb ladders & ropes, or drop through the grate',
+    'E  act — open doors, pick locks, cut a window, grab loot, dig the earth you face',
+    'SHIFT  sneak (slow, quiet, low)        ESC  stop a dig',
     '',
-    'Guards walk the floors. Cross a roof above them, tunnel beneath them, or hang on a rope till they pass.',
-    'Clay holds. Loam counts one. Gravel counts double. An unshored span over three caves in — loudly.',
+    'Guards patrol the floors. Slip over them, tunnel under them, or wait for them to pass.',
   ];
-  let y=168; for(const l of L){ ctx.fillText(l, 90, y); y+=24; }
+  let y=170; for(const l of L){ ctx.fillText(l, 100, y); y+=26; }
   ctx.textAlign='center'; ctx.fillStyle=PAL.sodium; ctx.font='15px monospace';
   ctx.fillText(isTouchDevice?'— tap to begin the night —':'— press ENTER to begin the night —', CW/2, y+18);
 }

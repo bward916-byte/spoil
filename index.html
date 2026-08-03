@@ -132,7 +132,7 @@ let floorType;       // per-floor surface tag for loudness (carpet/tile) keyed b
 let doors;           // Map cell -> {open,locked,pins,label,x,y}
 let openWin, glass;  // Sets of window cells opened / smashed
 let ropes;           // Set of cells with a deployed/there rope
-let lamps, loot, guards, lightmap;
+let lamps, loot, guards, lightmap, exitPx;
 let exploredSet, visSet;
 let player, mode, msgState, floaters, rings, shake, stats, cam, gameT;
 let lock, action;
@@ -162,6 +162,7 @@ function genLevel(){
   // exit: lit alley mouth on the right at street level
   for(let y=groundY-3; y<groundY; y++){ grid[idx(W-3,y)]=' '; grid[idx(W-2,y)]='X'; }
   grid[idx(W-2,groundY-1)]='X'; grid[idx(W-3,groundY-1)]='X';
+  exitPx = { x:(W-2.5)*T, y:(groundY-2)*T };
 
   // ---- the counting house: x 8..40, three storeys above street + a cellar below ----
   const bx0=8, bx1=40;
@@ -703,7 +704,7 @@ function doCollapse(region){
 // ============================================================
 function openLock(door){
   const pins=[]; for(let i=0;i<door.pins;i++){ const w=clamp(24-door.pins*2.4,6,20); pins.push({c:12+Math.random()*66,w,set:false}); }
-  lock={ door, pins, cur:0, prog:0, wrong:0, edge:0 };
+  lock={ door, pins, cur:0, prog:0, wrong:0, edge:0, torque:0 };
   msg(touch.used?`${door.label}: ${door.pins} pins. Hold TENSION, sweep with your thumb.`
     :`${door.label}: ${door.pins} pins. Hold SPACE for tension, steer with the mouse.`);
 }
@@ -951,10 +952,12 @@ function render(){
   drawSky();
   drawWorld(x0,y0,x1,y1);
   drawLamps();
+  drawExit();
   drawRings();
   drawLoot();
   drawGuards();
   drawPlayer();
+  drawMotes(x0,y0,x1,y1);
   drawFloaters();
   ctx.restore();
 
@@ -977,6 +980,23 @@ function drawSky(){
   ctx.fillStyle='rgba(191,203,217,0.35)';
   for(let s=0;s<40;s++){ const sx=((s*97)%(W*T)), sy=((s*53)%(skyBot-40))+6;
     if(sx>cam.x-T && sx<cam.x+VW+T) ctx.fillRect(sx, sy, 1, 1); }
+  // moon with soft halo
+  const mx=47*T, my=3.2*T;
+  if(mx>cam.x-90 && mx<cam.x+VW+90){
+    const mg=ctx.createRadialGradient(mx,my,3, mx,my,66);
+    mg.addColorStop(0,'rgba(226,232,244,0.75)'); mg.addColorStop(0.28,'rgba(190,204,230,0.28)'); mg.addColorStop(1,'rgba(190,204,230,0)');
+    ctx.fillStyle=mg; ctx.beginPath(); ctx.arc(mx,my,66,0,TAU); ctx.fill();
+    ctx.fillStyle='#e4eaf6'; ctx.beginPath(); ctx.arc(mx,my,13,0,TAU); ctx.fill();
+    ctx.fillStyle='rgba(150,162,188,0.4)';
+    ctx.beginPath(); ctx.arc(mx+4,my-3,3,0,TAU); ctx.fill();
+    ctx.beginPath(); ctx.arc(mx-4,my+4,2.2,0,TAU); ctx.fill();
+    ctx.beginPath(); ctx.arc(mx+2,my+5,1.6,0,TAU); ctx.fill();
+    // slow drifting cloud in front of the moon
+    const cxp=mx-30+((gameT*6)%120);
+    ctx.fillStyle='rgba(14,18,28,0.5)';
+    ctx.beginPath(); ctx.ellipse(cxp,my+2,26,7,0,0,TAU); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(cxp+16,my-2,16,6,0,0,TAU); ctx.fill();
+  }
 }
 
 function drawLamps(){
@@ -1085,15 +1105,35 @@ function drawRings(){ for(const r of rings){ const a=r.t/0.9; for(const [i,l] of
   const x=(i%W)*T,y=((i/W)|0)*T; ctx.fillStyle=`rgba(184,67,58,${0.05+0.16*(l/r.max)*a})`; ctx.fillRect(x,y,T,T); } } }
 
 function drawLoot(){ for(const l of loot){ if(l.taken) continue; const i=idx(l.x,l.y); if(!exploredSet.has(i)) continue;
-  const vis=visSet.has(i); const L=vis?lightmap[i]*0.9+0.2:0.35; const px=l.x*T+T/2, py=l.y*T+T/2;
-  if(l.type==='coin'){ ctx.fillStyle=shade(PAL.sodium,L); ctx.beginPath(); ctx.arc(px,py-2,4,0,TAU); ctx.fill(); }
-  else { ctx.fillStyle=shade(PAL.sodium,L); ctx.fillRect(px-8,py-6,16,10); ctx.strokeStyle=shade('#000',0.6); ctx.strokeRect(px-8,py-6,16,10); ctx.fillStyle=shade(PAL.oxide,L); ctx.fillRect(px-2,py-3,4,3); } } }
+  const vis=visSet.has(i); const L=vis?lightmap[i]*0.9+0.25:0.35; const px=l.x*T+T/2, py=l.y*T+T/2;
+  const glint=0.5+0.5*Math.sin(gameT*3 + l.x*1.7 + l.y);
+  // warm glow
+  if(vis){ ctx.save(); ctx.globalCompositeOperation='lighter';
+    const g=ctx.createRadialGradient(px,py-2,0, px,py-2,l.type==='box'?18:11);
+    g.addColorStop(0,`rgba(233,162,59,${0.28+0.16*glint})`); g.addColorStop(1,'rgba(233,162,59,0)');
+    ctx.fillStyle=g; ctx.beginPath(); ctx.arc(px,py-2,l.type==='box'?18:11,0,TAU); ctx.fill(); ctx.restore(); }
+  if(l.type==='coin'){
+    ctx.fillStyle=shade('#c8892f',L); ctx.beginPath(); ctx.arc(px,py-2,4.5,0,TAU); ctx.fill();
+    ctx.fillStyle=shade(PAL.sodium,L); ctx.beginPath(); ctx.arc(px,py-2,3,0,TAU); ctx.fill();
+    ctx.fillStyle=`rgba(255,240,200,${0.5+0.4*glint})`; ctx.beginPath(); ctx.arc(px-1.2,py-3.4,1.1,0,TAU); ctx.fill();
+  } else {
+    // strongbox: banded chest with a lit clasp
+    ctx.fillStyle=shade('#5a4326',L); ctx.fillRect(px-9,py-7,18,12);
+    ctx.fillStyle=shade('#3a2c18',L); ctx.fillRect(px-9,py-2,18,2);
+    ctx.strokeStyle=shade('#caa24a',L); ctx.lineWidth=1; ctx.strokeRect(px-9,py-7,18,12);
+    ctx.fillStyle=shade(PAL.sodium,L); ctx.fillRect(px-9,py-7,18,2);
+    ctx.fillStyle=`rgba(255,230,170,${0.5+0.5*glint})`; ctx.fillRect(px-2,py-3,4,3);
+    ctx.lineWidth=1;
+  } } }
 
 // ---------- humanoid figure ----------
 // Draws a person standing on (cx, feetY), facing dir, animated by phase.
 // pose: 'stand'|'walk'|'run'|'crouch'|'prone'|'climb'. cols = {skin, cloth, accent, line}
 function drawHuman(cx, feetY, dir, pose, phase, cols, L){
   feetY -= 1;                            // seat rounded foot-caps on the floor line, not through it
+  // soft contact shadow
+  ctx.fillStyle=`rgba(0,0,0,${0.22*clamp(L+0.2,0,1)})`;
+  ctx.beginPath(); ctx.ellipse(cx, feetY+1.5, 8, 2.4, 0, 0, TAU); ctx.fill();
   const sh = v=>shade(v, L);
   ctx.lineCap='round';
   const swing = Math.sin(phase);        // -1..1 gait
@@ -1251,27 +1291,138 @@ function drawHUD(){
   ctx.textAlign='left';
 }
 
+function drawExit(){
+  if(!exitPx) return;
+  const i=idx(clamp(exitPx.x/T|0,0,W-1), clamp(exitPx.y/T|0,0,H-1));
+  if(!exploredSet.has(i)) return;
+  ctx.save(); ctx.globalCompositeOperation='lighter';
+  const pulse=0.6+0.4*Math.sin(gameT*2.2);
+  const g=ctx.createRadialGradient(exitPx.x,exitPx.y,3, exitPx.x,exitPx.y,T*3.2);
+  g.addColorStop(0,`rgba(233,162,59,${0.30*pulse})`);
+  g.addColorStop(0.5,`rgba(78,156,134,${0.12*pulse})`);
+  g.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=g; ctx.beginPath(); ctx.arc(exitPx.x,exitPx.y,T*3.2,0,TAU); ctx.fill();
+  ctx.restore();
+}
+
+function drawMotes(x0,y0,x1,y1){
+  // slow drifting specks — warm above ground, cool dust below
+  const groundY=18;
+  ctx.save();
+  for(let s=0;s<52;s++){
+    const bx=(s*131.3)%(W*T), by=(s*79.7)%(H*T);
+    const drift=Math.sin(gameT*0.5 + s)*6;
+    const mx=bx+drift, my=by + (gameT*7 + s*40)% (H*T);
+    const tx=(mx/T)|0, ty=(my/T)|0;
+    if(mx<cam.x||mx>cam.x+VW||my<cam.y||my>cam.y+VH) continue;
+    if(!inb(tx,ty)) continue; const ci=idx(tx,ty);
+    if(!visSet.has(ci)) continue;
+    if(solid(ci)) continue;
+    const under=ty>groundY;
+    ctx.fillStyle = under? `rgba(150,170,200,${0.08+0.06*Math.sin(gameT+s)})`
+                         : `rgba(233,200,150,${0.09+0.05*Math.sin(gameT*1.3+s)})`;
+    ctx.fillRect(mx, my, 1.4, 1.4);
+  }
+  ctx.restore();
+}
+
+function roundRect(x,y,w,h,r){ ctx.beginPath();
+  ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
+
 function drawLock(){
   ctx.setTransform(1,0,0,1,0,0);
-  const w=560,h=150, x=(CW-w)/2, y=(CH-HUD_H-h)/2;
-  ctx.fillStyle='rgba(10,12,17,0.92)'; ctx.fillRect(x,y,w,h); ctx.strokeStyle=PAL.draft; ctx.strokeRect(x,y,w,h);
-  ctx.textAlign='center'; ctx.fillStyle=PAL.chalk; ctx.font='13px monospace';
-  ctx.fillText(`${lock.door.label} — pin ${Math.min(lock.cur+1,lock.pins.length)} of ${lock.pins.length}`, CW/2, y+26);
-  const bx=x+40, bw=w-80, by=y+56;
-  ctx.fillStyle=PAL.void; ctx.fillRect(bx,by,bw,26); ctx.strokeStyle=PAL.draft; ctx.strokeRect(bx,by,bw,26);
-  // pins
-  for(let i=0;i<lock.pins.length;i++){ const p=lock.pins[i];
-    const cx=bx+(p.c/90)*bw, hw=(p.w/90)*bw/2;
-    ctx.fillStyle = p.set?PAL.verd : i===lock.cur?PAL.sodium:PAL.draft;
-    ctx.globalAlpha = p.set?0.8:i===lock.cur?0.5:0.25;
-    ctx.fillRect(cx-hw,by,hw*2,26); ctx.globalAlpha=1;
+  const gh=CH-HUD_H;
+  // dim the scene behind
+  ctx.fillStyle='rgba(6,8,12,0.55)'; ctx.fillRect(0,0,CW,gh);
+
+  const w=560, h=300, x=(CW-w)/2, y=(gh-h)/2;
+  // metallic panel
+  const pg=ctx.createLinearGradient(0,y,0,y+h);
+  pg.addColorStop(0,'#1b2130'); pg.addColorStop(0.5,'#12161f'); pg.addColorStop(1,'#0c0f16');
+  roundRect(x,y,w,h,14); ctx.fillStyle=pg; ctx.fill();
+  ctx.lineWidth=2; ctx.strokeStyle=PAL.draft; ctx.stroke();
+  roundRect(x+5,y+5,w-10,h-10,10); ctx.strokeStyle='rgba(191,203,217,0.06)'; ctx.lineWidth=1; ctx.stroke();
+  // corner rivets
+  for(const [rx,ry] of [[x+16,y+16],[x+w-16,y+16],[x+16,y+h-16],[x+w-16,y+h-16]]){
+    ctx.fillStyle='#2a3550'; ctx.beginPath(); ctx.arc(rx,ry,3,0,TAU); ctx.fill();
+    ctx.fillStyle='rgba(191,203,217,0.3)'; ctx.beginPath(); ctx.arc(rx-0.6,ry-0.6,1,0,TAU); ctx.fill(); }
+
+  ctx.textAlign='center'; ctx.textBaseline='alphabetic';
+  ctx.fillStyle=PAL.chalk; ctx.font='bold 14px monospace';
+  ctx.fillText(lock.door.label.toUpperCase(), CW/2, y+34);
+  ctx.fillStyle=PAL.draft; ctx.font='11px monospace';
+  ctx.fillText(`pin ${Math.min(lock.cur+1,lock.pins.length)} of ${lock.pins.length}`, CW/2, y+52);
+
+  const cx=CW/2, cy=y+h-64, R=112;
+  const tension=!!keys[' ']||touch.tension;
+  const ang=clamp((mouse.x/CW)*90,0,90);
+  const danger=(ang<6||ang>84);
+  const A0=Math.PI, A1=Math.PI*2;                 // top semicircle, left->right
+  const toTheta=a=>A0 + (a/90)*(A1-A0);
+  // torque: the whole cylinder twists a touch when tension is applied
+  lock.torque = lerp(lock.torque||0, tension?(danger?0.06:0.05):0, 0.25);
+
+  ctx.save(); ctx.translate(cx,cy); ctx.rotate(lock.torque);
+
+  // cylinder face
+  const cg=ctx.createRadialGradient(0,0,6, 0,0,R+16);
+  cg.addColorStop(0,'#161c28'); cg.addColorStop(1,'#0b0e15');
+  ctx.fillStyle=cg; ctx.beginPath(); ctx.arc(0,0,R+16,Math.PI,TAU); ctx.lineTo(-R-16,0); ctx.fill();
+  // dial base arc
+  ctx.lineCap='round';
+  ctx.strokeStyle='#232c40'; ctx.lineWidth=16;
+  ctx.beginPath(); ctx.arc(0,0,R,A0,A1); ctx.stroke();
+  // tick marks
+  ctx.strokeStyle='rgba(191,203,217,0.18)'; ctx.lineWidth=1;
+  for(let a=0;a<=90;a+=7.5){ const th=toTheta(a); const r0=R-9,r1=R+9;
+    ctx.beginPath(); ctx.moveTo(Math.cos(th)*r0,Math.sin(th)*r0); ctx.lineTo(Math.cos(th)*r1,Math.sin(th)*r1); ctx.stroke(); }
+  // danger zones at the ends
+  ctx.strokeStyle='rgba(184,67,58,0.5)'; ctx.lineWidth=16;
+  ctx.beginPath(); ctx.arc(0,0,R,toTheta(0),toTheta(6)); ctx.stroke();
+  ctx.beginPath(); ctx.arc(0,0,R,toTheta(84),toTheta(90)); ctx.stroke();
+
+  // pin zones
+  const pulse=0.6+0.4*Math.sin(gameT*6);
+  for(let i=0;i<lock.pins.length;i++){ const pn=lock.pins[i];
+    const ta=toTheta(pn.c-pn.w/2), tb=toTheta(pn.c+pn.w/2), tc=toTheta(pn.c);
+    if(pn.set){ ctx.strokeStyle=PAL.verd; ctx.globalAlpha=0.9; }
+    else if(i===lock.cur){ ctx.strokeStyle=PAL.sodium; ctx.globalAlpha=0.35+0.4*pulse; }
+    else { ctx.strokeStyle=PAL.draft; ctx.globalAlpha=0.3; }
+    ctx.lineWidth=16; ctx.beginPath(); ctx.arc(0,0,R,ta,tb); ctx.stroke(); ctx.globalAlpha=1;
+    // seated pin marker
+    if(pn.set){ const mx=Math.cos(tc)*R, my=Math.sin(tc)*R;
+      ctx.fillStyle=PAL.verd; ctx.beginPath(); ctx.arc(mx,my,4.5,0,TAU); ctx.fill();
+      ctx.fillStyle='rgba(233,255,240,0.8)'; ctx.beginPath(); ctx.arc(mx,my,2,0,TAU); ctx.fill(); }
   }
-  // needle
-  const ang=clamp((mouse.x/CW)*90,0,90); const nx=bx+(ang/90)*bw;
-  ctx.strokeStyle = (ang<6||ang>84)?PAL.oxide:PAL.chalk; ctx.lineWidth=2;
-  ctx.beginPath(); ctx.moveTo(nx,by-6); ctx.lineTo(nx,by+32); ctx.stroke(); ctx.lineWidth=1;
-  ctx.fillStyle=PAL.draft; ctx.font='10px monospace';
-  ctx.fillText((keys[' ']||touch.tension)?'tension held':'apply tension', CW/2, y+h-14);
+
+  // the pick needle
+  const th=toTheta(ang);
+  const tipx=Math.cos(th)*R, tipy=Math.sin(th)*R;
+  const inZone = lock.cur<lock.pins.length && Math.abs(ang-lock.pins[lock.cur].c) < lock.pins[lock.cur].w/2;
+  const needleCol = danger?PAL.oxide : (inZone&&tension)?PAL.verd : PAL.chalk;
+  ctx.strokeStyle='#0A0C11'; ctx.lineWidth=6; ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(tipx,tipy); ctx.stroke();
+  ctx.strokeStyle=needleCol; ctx.lineWidth=2.5; ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(tipx*0.98,tipy*0.98); ctx.stroke();
+  // glowing tip + progress ring while seating
+  const glow=ctx.createRadialGradient(tipx,tipy,0, tipx,tipy,14);
+  glow.addColorStop(0, needleCol); glow.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.globalAlpha=0.6; ctx.fillStyle=glow; ctx.beginPath(); ctx.arc(tipx,tipy,14,0,TAU); ctx.fill(); ctx.globalAlpha=1;
+  if(inZone && tension && lock.prog>0){ ctx.strokeStyle=PAL.verd; ctx.lineWidth=3;
+    ctx.beginPath(); ctx.arc(tipx,tipy,10,-Math.PI/2,-Math.PI/2+TAU*clamp(lock.prog/0.5,0,1)); ctx.stroke(); }
+  // hub
+  ctx.fillStyle='#2a3550'; ctx.beginPath(); ctx.arc(0,0,7,0,TAU); ctx.fill();
+  ctx.fillStyle='rgba(191,203,217,0.35)'; ctx.beginPath(); ctx.arc(-1.5,-1.5,2.5,0,TAU); ctx.fill();
+  ctx.restore();
+  ctx.lineWidth=1; ctx.lineCap='butt';
+
+  // seated-pin pips
+  const dotN=lock.pins.length, dw=14, tot=dotN*dw, dx0=CW/2-tot/2+dw/2;
+  for(let i=0;i<dotN;i++){ ctx.fillStyle=lock.pins[i].set?PAL.verd:'rgba(120,130,150,0.3)';
+    ctx.beginPath(); ctx.arc(dx0+i*dw, y+h-26, 4, 0, TAU); ctx.fill(); }
+
+  // tension prompt
+  ctx.fillStyle=tension?PAL.verd:PAL.sodium; ctx.font='11px monospace';
+  ctx.fillText(tension?'\u25CF TENSION HELD — sweep to each pin':(touch.used?'hold TENSION and sweep':'hold SPACE and move the pick'), CW/2, y+h-8);
 }
 
 function drawTouchUI(){

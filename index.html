@@ -472,9 +472,10 @@ function playerUpdate(dt){
   if(keys['d']||keys['arrowright']) ix+=1;
   if(keys['w']||keys['arrowup']) iy-=1;
   if(keys['s']||keys['arrowdown']) iy+=1;
-  if(touch.stickId!=null){                 // fixed thumbstick
-    if(Math.abs(touch.vec[0])>0.34) ix=sign(touch.vec[0]);
-    if(Math.abs(touch.vec[1])>0.44) iy=sign(touch.vec[1]);
+  if(touch.stickId!=null){                 // fixed thumbstick, axis-priority
+    const vx=touch.vec[0], vy=touch.vec[1], ax=Math.abs(vx), ay=Math.abs(vy);
+    if(ax>0.34) ix=sign(vx);               // walking is always available
+    if(ay>0.5 && ay>ax) iy=sign(vy);       // climb/drop only on a clearly vertical push
   }
   const busy = action && action.type!=='descend';
   if(busy){ ix=0; iy=0; }

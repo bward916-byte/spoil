@@ -223,11 +223,11 @@ function genLevel(){
 
   // ---- lamps (x,y tile centers, radius tiles) ----
   lamps = [
-    { x:4.5,  y:groundY-1.5, r:6 },
-    { x:W-6.5,y:groundY-1.5, r:6 },   // near the exit
-    { x:26,   y:groundY-1.5, r:5 },   // street lamp in front of the house
-    { x:14,   y:s2-1.5,      r:4.5 }, // interior mid
-    { x:35,   y:groundY-1.5, r:4 },   // vault sconce — lights the strongbox
+    { x:4.5,  y:groundY-1.5, r:7.5 },
+    { x:W-6.5,y:groundY-1.5, r:7.5 },   // near the exit
+    { x:26,   y:groundY-1.5, r:6.5 },   // street lamp in front of the house
+    { x:14,   y:s2-1.5,      r:6 },     // interior mid
+    { x:35,   y:groundY-1.5, r:5.5 },   // vault sconce — lights the strongbox
   ];
 
   // ---- guards patrolling floors (side-view: they walk a storey, can take ladders) ----
@@ -341,7 +341,7 @@ function bakeLight(){
         const d = Math.hypot(x+0.5-lm.x, y+0.5-lm.y);
         if(d>r) continue;
         if(!los(lm.x,lm.y,x+0.5,y+0.5)) continue;
-        const v = (1-d/r); const i=idx(x,y);
+        const v = Math.pow(clamp(1-d/r,0,1), 0.6); const i=idx(x,y);
         if(v>lightmap[i]) lightmap[i]=v;
       }
   }
@@ -354,7 +354,7 @@ function lightAtPx(px,py){
     const d = Math.hypot(px-g.x,py-g.y)/T;
     if(d<4.5 && los(g.x/T,g.y/T,px/T,py/T)) v=Math.max(v,(1-d/4.5)*0.95);
   }
-  return clamp(v,0.03,1);
+  return clamp(v,0.16,1);
 }
 
 // ============================================================
@@ -986,7 +986,9 @@ function render(){
   const x0=Math.max(0,(cam.x/T)|0), y0=Math.max(0,(cam.y/T)|0);
   const x1=Math.min(W-1,((cam.x+VW)/T)|0), y1=Math.min(H-1,((cam.y+VH)/T)|0);
 
+  drawSky();
   drawWorld(x0,y0,x1,y1);
+  drawLamps();
   drawRings();
   drawLoot();
   drawGuards();
@@ -994,6 +996,7 @@ function render(){
   drawFloaters();
   ctx.restore();
 
+  drawVignette();
   drawHUD();
   if(lock) drawLock();
   buildTouchButtons(); drawTouchUI();
@@ -1002,11 +1005,49 @@ function render(){
   else if(mode==='escaped') drawEnd(true);
 }
 
+function drawSky(){
+  // night-sky gradient behind the above-ground air, plus a low moon glow
+  const skyBot = 18*T;
+  const g = ctx.createLinearGradient(0,0,0,skyBot);
+  g.addColorStop(0,'#0e1526'); g.addColorStop(0.7,'#0b1019'); g.addColorStop(1,'#0A0C11');
+  ctx.fillStyle=g; ctx.fillRect(cam.x-T, 0, VW+2*T, skyBot);
+  // a few faint stars, deterministic
+  ctx.fillStyle='rgba(191,203,217,0.35)';
+  for(let s=0;s<40;s++){ const sx=((s*97)%(W*T)), sy=((s*53)%(skyBot-40))+6;
+    if(sx>cam.x-T && sx<cam.x+VW+T) ctx.fillRect(sx, sy, 1, 1); }
+}
+
+function drawLamps(){
+  ctx.save(); ctx.globalCompositeOperation='lighter';
+  for(const lm of lamps){
+    const li=idx(clamp(lm.x|0,0,W-1), clamp(lm.y|0,0,H-1));
+    if(!exploredSet.has(li)) continue;
+    const vis=visSet.has(li);
+    const gx=lm.x*T, gy=lm.y*T, rad=lm.r*T*0.95;
+    const a = vis?0.42:0.10;
+    const g=ctx.createRadialGradient(gx,gy,2, gx,gy,rad);
+    g.addColorStop(0,`rgba(233,162,59,${a})`);
+    g.addColorStop(0.45,`rgba(233,162,59,${a*0.32})`);
+    g.addColorStop(1,'rgba(233,162,59,0)');
+    ctx.fillStyle=g; ctx.beginPath(); ctx.arc(gx,gy,rad,0,TAU); ctx.fill();
+    if(vis){ ctx.fillStyle='rgba(255,224,160,0.95)'; ctx.beginPath(); ctx.arc(gx,gy,2.6,0,TAU); ctx.fill(); }
+  }
+  ctx.restore();
+}
+
+function drawVignette(){
+  ctx.setTransform(1,0,0,1,0,0);
+  const gh=CH-HUD_H;
+  const vg=ctx.createRadialGradient(CW/2,gh*0.5, gh*0.30, CW/2,gh*0.5, gh*0.85);
+  vg.addColorStop(0,'rgba(0,0,0,0)'); vg.addColorStop(1,'rgba(0,0,0,0.34)');
+  ctx.fillStyle=vg; ctx.fillRect(0,0,CW,gh);
+}
+
 function cellLit(i,x,y){
   const seen=exploredSet.has(i), vis=visSet.has(i);
   if(!seen) return 0;
-  if(!vis) return 0.12;                 // blueprint memory: dim
-  return clamp(0.2+lightmap[i]*0.9, 0.12, 1);
+  if(!vis) return 0.24;                 // blueprint memory: dim but legible
+  return clamp(0.44 + lightmap[i]*0.72, 0.2, 1);
 }
 
 function drawWorld(x0,y0,x1,y1){
@@ -1032,6 +1073,26 @@ function drawWorld(x0,y0,x1,y1){
     else { base=null; } // air/ladder/rope/door/window drawn below
     if(base){ ctx.fillStyle = vis? shade(base,L) : shade(base,0.5); ctx.fillRect(px,py,T,T);
       if(top && vis){ ctx.fillStyle=shade(top,L); ctx.fillRect(px,py,T,3); } }
+
+    // surface detailing (only where lit/visible)
+    if(vis){
+      if(k==='#'||k==='K'){
+        ctx.strokeStyle='rgba(0,0,0,0.30)'; ctx.lineWidth=1;
+        const my=py+T/2, off=(y%2)?T/2:0;
+        ctx.beginPath();
+        ctx.moveTo(px,my+0.5); ctx.lineTo(px+T,my+0.5);                         // mortar course
+        ctx.moveTo(px+off+0.5,py); ctx.lineTo(px+off+0.5,my);                   // upper joint
+        ctx.moveTo(px+((off+T/2)%T)+0.5,my); ctx.lineTo(px+((off+T/2)%T)+0.5,py+T); // lower joint
+        ctx.stroke();
+        ctx.strokeStyle='rgba(191,203,217,0.05)'; ctx.beginPath(); ctx.moveTo(px,py+0.5); ctx.lineTo(px+T,py+0.5); ctx.stroke();
+      } else if(k==='='||k==='w'){
+        ctx.fillStyle='rgba(255,240,210,0.05)'; ctx.fillRect(px,py,T,1);        // top sheen
+        ctx.strokeStyle='rgba(0,0,0,0.22)'; ctx.lineWidth=1;
+        ctx.beginPath(); ctx.moveTo(px,py+T-0.5); ctx.lineTo(px+T,py+T-0.5);    // underside shadow
+        ctx.moveTo(px+T-0.5,py+2); ctx.lineTo(px+T-0.5,py+T-2); ctx.stroke();   // plank seam
+      }
+      ctx.lineWidth=1;
+    }
 
     // overlays
     if(k==='H'){ drawLadder(px,py,L); }
@@ -1341,6 +1402,18 @@ function boot(){
   canvas.addEventListener('contextmenu', e=>e.preventDefault&&e.preventDefault());
   canvas.addEventListener('mousemove', e=>{ const r=canvas.getBoundingClientRect(); mouse.x=(e.clientX-r.left)*(CW/r.width); mouse.y=(e.clientY-r.top)*(CH/r.height); });
   canvas.addEventListener('mousedown', ()=>{ ac(); if(mode==='title') mode='play'; else if(mode==='caught'||mode==='escaped'){ resetRun(); mode='play'; } });
+  // When the device rotates or the window resizes, any in-progress joystick anchor
+  // (stored in canvas pixels) becomes stale and movement directions can go haywire.
+  // Drop all live input so the player starts clean in the new layout.
+  const clearInput=()=>{ for(const k in keys) keys[k]=false;
+    touch.stick=null; touch.vec=[0,0]; touch.mag=0; touch.tension=false; touch.pickId=null; touch.holds.clear();
+    if(player) player.vx=0; };
+  if(typeof window!=='undefined' && window.addEventListener){
+    window.addEventListener('resize', clearInput);
+    window.addEventListener('orientationchange', clearInput);
+  }
+  if(typeof screen!=='undefined' && screen.orientation && screen.orientation.addEventListener)
+    screen.orientation.addEventListener('change', clearInput);
   let last=performance.now();
   function frame(now){ let dt=(now-last)/1000; last=now; if(dt>0.05) dt=0.05; step(dt); render(); requestAnimationFrame(frame); }
   requestAnimationFrame(frame);

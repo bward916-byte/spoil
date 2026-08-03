@@ -1495,13 +1495,28 @@ function drawLock(){
 function drawTouchUI(){
   if(!touch.used) return;
   ctx.setTransform(1,0,0,1,0,0);
+  const dirs={arrowleft:'L',arrowright:'R',arrowup:'U',arrowdown:'D'};
   for(const b of touchButtons){
     const held=[...touch.holds.values()].includes(b.k)||(b.k==='tension'&&touch.tension)||(b.k==='sneak'&&player&&player.sneak);
-    ctx.globalAlpha=held?0.5:0.22; ctx.fillStyle=held?PAL.verd:PAL.draft; ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,TAU); ctx.fill();
-    ctx.globalAlpha=held?0.95:0.6; ctx.strokeStyle=PAL.chalk; ctx.lineWidth=2.5; ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,TAU); ctx.stroke();
-    ctx.fillStyle=PAL.chalk; ctx.font=(b.big?'bold 18px':'bold 14px')+' monospace'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(b.label,b.x,b.y);
+    const dir=dirs[b.k];
+    // button disc — D-pad a touch more visible than action buttons
+    ctx.globalAlpha=held?0.55:(dir?0.32:0.24); ctx.fillStyle=held?PAL.verd:PAL.draft;
+    ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,TAU); ctx.fill();
+    ctx.globalAlpha=held?1:0.7; ctx.strokeStyle=PAL.chalk; ctx.lineWidth=2.5;
+    ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,TAU); ctx.stroke();
+    if(dir){
+      // draw an actual triangle (never depends on a font glyph)
+      const s=b.r*0.42; ctx.fillStyle=held?PAL.chalk:'rgba(191,203,217,0.95)'; ctx.beginPath();
+      if(dir==='L'){ ctx.moveTo(b.x-s,b.y); ctx.lineTo(b.x+s*0.7,b.y-s); ctx.lineTo(b.x+s*0.7,b.y+s); }
+      else if(dir==='R'){ ctx.moveTo(b.x+s,b.y); ctx.lineTo(b.x-s*0.7,b.y-s); ctx.lineTo(b.x-s*0.7,b.y+s); }
+      else if(dir==='U'){ ctx.moveTo(b.x,b.y-s); ctx.lineTo(b.x-s,b.y+s*0.7); ctx.lineTo(b.x+s,b.y+s*0.7); }
+      else { ctx.moveTo(b.x,b.y+s); ctx.lineTo(b.x-s,b.y-s*0.7); ctx.lineTo(b.x+s,b.y-s*0.7); }
+      ctx.closePath(); ctx.fill();
+    } else {
+      ctx.fillStyle=PAL.chalk; ctx.font=(b.big?'bold 18px':'bold 13px')+' monospace'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(b.label,b.x,b.y);
+    }
     ctx.globalAlpha=1; ctx.lineWidth=1; }
-  ctx.textBaseline='alphabetic';
+  ctx.textBaseline='alphabetic'; ctx.textAlign='left';
 }
 
 function drawTitle(){
@@ -1588,6 +1603,7 @@ function drawEnd(escaped){
 function boot(){
   canvas = document.getElementById('g');
   ctx = canvas.getContext('2d');
+  touch.used = isTouchDevice;            // show the D-pad right away on phones/tablets
   resetRun(); mode='title';
   document.addEventListener('keydown', onKeyDown);
   document.addEventListener('keyup', onKeyUp);

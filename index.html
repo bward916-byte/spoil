@@ -524,8 +524,17 @@ function playerUpdate(dt){
     }
     const wasGround = player.onGround;
     const fallV = player.vy;
+    const preFeet = player.y + TIERS[player.tier].h*0.5;
     moveAxis(player.vx*dt, 0);
     moveAxis(0, player.vy*dt);
+    // one-way landing: if we dropped onto a ladder rung that's level with a floor, stand on it
+    // (walk across ladders). Pushing down starts a climb instead, so this won't trap you.
+    if(!player.climbing && player.vy>0 && !(keys['s']||keys['arrowdown']) && !(touch.stickId!=null&&touch.vec[1]>0.5)){
+      const h=TIERS[player.tier].h, fx=(player.x/T)|0, ty=((player.y+h*0.5+2)/T)|0;
+      if(inb(fx,ty) && !solid(idx(fx,ty)) && climbable(idx(fx,ty)) && atFloorLevel(idx(fx,ty)) && preFeet <= ty*T+3){
+        player.y = ty*T - 0.6 - h*0.5; player.vy = 0;   // rest just above the landing, like a floor
+      }
+    }
     player.onGround = groundProbe();
     if(player.onGround && !wasGround && fallV>260){ sfx.land(); emitSound((player.x/T)|0,(player.y/T)|0, Math.min(14,fallV/40)); }
     if(player.onGround) player.coyote=0.1; else player.coyote=Math.max(0,player.coyote-dt);
@@ -582,11 +591,17 @@ function moveAxis(dx,dy){
   return blocked;
 }
 // probe: is there solid ground within 2px under the feet?
+// a ladder/rope cell that sits level with a floor slab acts as a landing you can walk across
+function atFloorLevel(i){ const x=i%W, y=(i/W)|0;
+  return (inb(x-1,y)&&grid[idx(x-1,y)]==='=') || (inb(x+1,y)&&grid[idx(x+1,y)]==='='); }
 function groundProbe(){
   const h=TIERS[player.tier].h, r=7;
   for(const ox of [-r, r]){
     const tx=((player.x+ox)/T)|0, ty=((player.y+h*0.5+2)/T)|0;
-    if(inb(tx,ty) && solid(idx(tx,ty))) return true;
+    if(!inb(tx,ty)) continue;
+    const bi=idx(tx,ty);
+    if(solid(bi)) return true;
+    if(!player.climbing && climbable(bi) && atFloorLevel(bi)) return true;  // stand on a ladder landing
   }
   return false;
 }

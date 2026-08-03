@@ -133,7 +133,7 @@ let floorType;       // per-floor surface tag for loudness (carpet/tile) keyed b
 let doors;           // Map cell -> {open,locked,pins,label,x,y}
 let openWin, glass;  // Sets of window cells opened / smashed
 let ropes;           // Set of cells with a deployed/there rope
-let lamps, loot, guards, lightmap, exitPx;
+let lamps, loot, guards, lightmap, exitPx, decor;
 let exploredSet, visSet;
 let player, mode, msgState, floaters, rings, shake, stats, cam, gameT;
 let tutMsg={text:'',t:0}, tutSeen=new Set();
@@ -242,6 +242,22 @@ function genLevel(){
 
   // ---- earth below groundY ----
   genEarth(groundY, bx0, bx1);
+
+  // ---- decorative furnishings (purely visual) ----
+  // {x, y(floor row it stands on), type}; wall art uses w:true at its own cell
+  decor = [
+    // attic (floor s1=8): crates & a barrel
+    {x:16,y:s1,t:'crate'}, {x:17,y:s1,t:'crateSm'}, {x:30,y:s1,t:'barrel'},
+    // upper storey (floor s2=12): bookcase, desk, chair
+    {x:15,y:s2,t:'bookcase'}, {x:32,y:s2,t:'desk'}, {x:34,y:s2,t:'chair'},
+    // mid storey (floor s3=16): table, rug, wall painting
+    {x:14,y:s3,t:'table'}, {x:34,y:s3,t:'crate'}, {x:22,y:s3,t:'rug',w:false},
+    {x:16,y:14,t:'painting',wall:true},
+    // ground counting room (floor 18): desk & stool
+    {x:14,y:groundY,t:'desk'}, {x:16,y:groundY,t:'stool'},
+    // strongroom: a strongbox pedestal / cabinet beside the loot
+    {x:34,y:groundY,t:'cabinet'}, {x:30,y:groundY,t:'sconceStand'},
+  ];
 
   bakeLight();
 }
@@ -1012,6 +1028,8 @@ function render(){
 
   drawSky();
   drawWorld(x0,y0,x1,y1);
+  drawDecor();
+  drawSewerWater(x0,y0,x1,y1);
   drawLamps();
   drawExit();
   drawRings();
@@ -1062,20 +1080,89 @@ function drawSky(){
   }
 }
 
+function drawDecor(){
+  if(!decor) return;
+  for(const d of decor){
+    const cell=idx(d.x, d.wall?d.y:d.y-1);
+    if(!exploredSet.has(idx(d.x,d.y)) && !exploredSet.has(cell)) continue;
+    const vis=visSet.has(idx(d.x,d.y))||visSet.has(cell);
+    const L=vis?clamp(0.42+lightmap[cell]*0.7,0.2,1):0.4;
+    const bx=d.x*T, floorTop=d.y*T;
+    drawProp(d.t, bx, floorTop, L, vis);
+  }
+}
+function drawProp(t, bx, fy, L, vis){
+  const sh=v=>shade(v,L);
+  const wood='#5a4326', woodD='#3a2c18', metal='#33405e';
+  switch(t){
+    case 'crate': ctx.fillStyle=sh(wood); ctx.fillRect(bx+3,fy-16,T-6,16);
+      ctx.strokeStyle=sh(woodD); ctx.lineWidth=1; ctx.strokeRect(bx+3,fy-16,T-6,16);
+      ctx.beginPath(); ctx.moveTo(bx+3,fy-16); ctx.lineTo(bx+T-3,fy); ctx.moveTo(bx+T-3,fy-16); ctx.lineTo(bx+3,fy); ctx.stroke(); break;
+    case 'crateSm': ctx.fillStyle=sh(wood); ctx.fillRect(bx+5,fy-11,T-10,11);
+      ctx.strokeStyle=sh(woodD); ctx.strokeRect(bx+5,fy-11,T-10,11); break;
+    case 'barrel': ctx.fillStyle=sh('#4a3826'); ctx.beginPath(); ctx.ellipse(bx+T/2,fy-9,7,10,0,0,TAU); ctx.fill();
+      ctx.strokeStyle=sh('#6a5238'); ctx.lineWidth=1.5; ctx.beginPath(); ctx.moveTo(bx+T/2-7,fy-12); ctx.lineTo(bx+T/2+7,fy-12); ctx.moveTo(bx+T/2-7,fy-6); ctx.lineTo(bx+T/2+7,fy-6); ctx.stroke(); ctx.lineWidth=1; break;
+    case 'bookcase': ctx.fillStyle=sh(woodD); ctx.fillRect(bx+2,fy-44,T-4,44);
+      for(let s=0;s<4;s++){ const sy=fy-42+s*11; ctx.fillStyle=sh('#2a2016'); ctx.fillRect(bx+3,sy,T-6,9);
+        const cols=[PAL.oxide,PAL.verd,PAL.sodium,PAL.draft,'#7a5a3a'];
+        for(let b=0;b<5;b++){ ctx.fillStyle=sh(cols[(s+b)%5]); ctx.fillRect(bx+4+b*3.4,sy+1,2.6,7); } }
+      ctx.strokeStyle=sh('#000'); ctx.strokeRect(bx+2,fy-44,T-4,44); break;
+    case 'desk': ctx.fillStyle=sh(wood); ctx.fillRect(bx+1,fy-13,T-2,5);
+      ctx.fillStyle=sh(woodD); ctx.fillRect(bx+3,fy-8,4,8); ctx.fillRect(bx+T-7,fy-8,4,8);
+      ctx.fillStyle=sh('#2a2016'); ctx.fillRect(bx+1,fy-8,T-2,5);
+      // ledger + quill light
+      ctx.fillStyle=sh(PAL.chalk); ctx.fillRect(bx+T/2-3,fy-16,7,4); break;
+    case 'table': ctx.fillStyle=sh(wood); ctx.fillRect(bx,fy-12,T,4);
+      ctx.fillStyle=sh(woodD); ctx.fillRect(bx+2,fy-8,3,8); ctx.fillRect(bx+T-5,fy-8,3,8); break;
+    case 'chair': ctx.fillStyle=sh(woodD); ctx.fillRect(bx+6,fy-16,3,16); ctx.fillRect(bx+6,fy-8,T-14,3);
+      ctx.fillRect(bx+6,fy-4,3,4); ctx.fillRect(bx+T-11,fy-4,3,4); break;
+    case 'stool': ctx.fillStyle=sh(woodD); ctx.fillRect(bx+5,fy-7,T-10,3); ctx.fillRect(bx+6,fy-4,3,4); ctx.fillRect(bx+T-9,fy-4,3,4); break;
+    case 'cabinet': ctx.fillStyle=sh(metal); ctx.fillRect(bx+3,fy-18,T-6,18);
+      ctx.strokeStyle=sh('#1a2130'); ctx.strokeRect(bx+3,fy-18,T-6,18);
+      ctx.fillStyle=sh(PAL.sodium); ctx.beginPath(); ctx.arc(bx+T-8,fy-9,2,0,TAU); ctx.fill(); break;
+    case 'sconceStand': ctx.strokeStyle=sh('#2a3550'); ctx.lineWidth=2; ctx.beginPath(); ctx.moveTo(bx+T/2,fy); ctx.lineTo(bx+T/2,fy-18); ctx.stroke(); ctx.lineWidth=1;
+      if(vis){ ctx.fillStyle='rgba(233,162,59,0.9)'; ctx.beginPath(); ctx.arc(bx+T/2,fy-20,2.4,0,TAU); ctx.fill(); } break;
+    case 'rug': ctx.fillStyle=sh('#5a2836'); ctx.fillRect(bx-T,fy-2,T*3,3);
+      ctx.fillStyle=sh(PAL.sodium); for(let r=-1;r<2;r++) ctx.fillRect(bx+r*T+T/2-4,fy-1,8,1); break;
+    case 'painting': { const y=fy-T+4; ctx.fillStyle=sh('#6a5238'); ctx.fillRect(bx+4,y,T-8,T-8);
+      ctx.fillStyle=sh(PAL.draft); ctx.fillRect(bx+6,y+2,T-12,T-12);
+      ctx.fillStyle=sh(PAL.verd); ctx.fillRect(bx+7,y+7,T-14,3); ctx.fillStyle=sh(PAL.sodium); ctx.beginPath(); ctx.arc(bx+T/2,y+5,2,0,TAU); ctx.fill(); break; }
+  }
+  ctx.lineWidth=1;
+}
+
+function drawSewerWater(x0,y0,x1,y1){
+  // shimmering water along the sewer channel floor
+  const groundY=18, sewerY=groundY+8;      // channel floor row
+  const wy=sewerY*T;
+  for(let x=x0;x<=x1;x++){ const i=idx(x,sewerY-1);
+    if(grid[idx(x,sewerY)]!=='=' ) continue;
+    if(!exploredSet.has(i)&&!exploredSet.has(idx(x,sewerY))) continue;
+    const vis=visSet.has(i)||visSet.has(idx(x,sewerY));
+    const a=vis?0.5:0.25;
+    ctx.fillStyle=`rgba(40,70,80,${a*0.5})`; ctx.fillRect(x*T,wy-4,T,4);
+    // moving highlight
+    const sh=Math.sin(gameT*2 + x*0.6);
+    ctx.fillStyle=`rgba(120,170,180,${(0.10+0.10*Math.max(0,sh))*(vis?1:0.4)})`;
+    ctx.fillRect(x*T,wy-4,T, 1);
+  }
+}
+
 function drawLamps(){
   ctx.save(); ctx.globalCompositeOperation='lighter';
-  for(const lm of lamps){
+  for(let k=0;k<lamps.length;k++){ const lm=lamps[k];
     const li=idx(clamp(lm.x|0,0,W-1), clamp(lm.y|0,0,H-1));
     if(!exploredSet.has(li)) continue;
     const vis=visSet.has(li);
-    const gx=lm.x*T, gy=lm.y*T, rad=lm.r*T*0.95;
-    const a = vis?0.42:0.10;
+    const flick=0.88+0.12*Math.sin(gameT*11+k*1.7)+0.05*Math.sin(gameT*23+k);
+    const gx=lm.x*T, gy=lm.y*T, rad=lm.r*T*0.95*(0.97+0.06*Math.sin(gameT*7+k));
+    const a = (vis?0.42:0.10)*flick;
     const g=ctx.createRadialGradient(gx,gy,2, gx,gy,rad);
     g.addColorStop(0,`rgba(233,162,59,${a})`);
     g.addColorStop(0.45,`rgba(233,162,59,${a*0.32})`);
     g.addColorStop(1,'rgba(233,162,59,0)');
     ctx.fillStyle=g; ctx.beginPath(); ctx.arc(gx,gy,rad,0,TAU); ctx.fill();
-    if(vis){ ctx.fillStyle='rgba(255,224,160,0.95)'; ctx.beginPath(); ctx.arc(gx,gy,2.6,0,TAU); ctx.fill(); }
+    if(vis){ ctx.fillStyle=`rgba(255,224,160,${0.95*flick})`; ctx.beginPath(); ctx.arc(gx,gy,2.6,0,TAU); ctx.fill(); }
   }
   ctx.restore();
 }
@@ -1163,6 +1250,21 @@ function drawWorld(x0,y0,x1,y1){
         ctx.strokeStyle='rgba(0,0,0,0.22)'; ctx.lineWidth=1;
         ctx.beginPath(); ctx.moveTo(px,py+T-0.5); ctx.lineTo(px+T,py+T-0.5);    // underside shadow
         ctx.moveTo(px+T-0.5,py+2); ctx.lineTo(px+T-0.5,py+T-2); ctx.stroke();   // plank seam
+      } else if(k==='E' && !dug[i] && mat[i]!=='K'){
+        // packed-earth grit: a few deterministic pebbles + a horizontal stratum line
+        const seed=(x*73856+y*19349)>>>0;
+        ctx.fillStyle='rgba(0,0,0,0.20)';
+        for(let s=0;s<3;s++){ const rx=px+3+((seed>>(s*5))&15)*1.3, ry=py+3+((seed>>(s*4+2))&15)*1.2; ctx.fillRect(rx,ry,1.4,1.4); }
+        ctx.fillStyle='rgba(191,203,217,0.05)';
+        const rx=px+2+(seed&15)*1.2; ctx.fillRect(rx,py+((seed>>8)&15)+2,2,1);
+        if(mat[i]==='R'){ ctx.strokeStyle='rgba(78,156,134,0.25)'; ctx.lineWidth=1; ctx.beginPath();
+          ctx.moveTo(px+2,py+T); ctx.quadraticCurveTo(px+T/2,py+T/2,px+T-3,py+2); ctx.stroke(); }
+      } else if(k==='E' && dug[i]){
+        // dug tunnel: darker floor grit + faint tool marks on the back wall
+        ctx.strokeStyle='rgba(0,0,0,0.25)'; ctx.lineWidth=1;
+        ctx.beginPath(); ctx.moveTo(px+3,py+4); ctx.lineTo(px+7,py+7); ctx.moveTo(px+T-8,py+5); ctx.lineTo(px+T-4,py+9); ctx.stroke();
+        if(shored[i]){ ctx.strokeStyle='rgba(120,90,50,0.5)'; ctx.lineWidth=2;
+          ctx.beginPath(); ctx.moveTo(px+2,py); ctx.lineTo(px+2,py+T); ctx.moveTo(px+T-2,py); ctx.lineTo(px+T-2,py+T); ctx.stroke(); }
       }
       ctx.lineWidth=1;
     }

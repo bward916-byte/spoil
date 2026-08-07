@@ -141,7 +141,7 @@ const LEVEL_INFO = [
 const LEVEL_NAMES = LEVEL_INFO.map(l=>l.name);
 const LEVELS = LEVEL_INFO.length;
 const SAVE_KEY = 'spoil.progress.v1';
-const VERSION = '2026.08.07-0419';
+const VERSION = '2026.08.07-0502';
 let prog = { xp:0, best:0, level:0 };
 function save(){ try{ if(typeof localStorage!=='undefined') localStorage.setItem(SAVE_KEY, JSON.stringify(prog)); }catch(e){} }
 function load(){ try{ if(typeof localStorage!=='undefined'){ const r=localStorage.getItem(SAVE_KEY);
@@ -202,8 +202,8 @@ function genShop(){
   // shop door — UNLOCKED (just walk in); back-room door is an easy 3-pin
   grid[idx(bx0,groundY-1)]='D'; doors.set(idx(bx0,groundY-1),{open:false,locked:false,pins:0,label:'shop door',x:bx0,y:groundY-1});
   grid[idx(28,groundY-1)]='D'; doors.set(idx(28,groundY-1),{open:false,locked:true,pins:3,label:'back-room door',x:28,y:groundY-1});
-  // a low window on the right as an alternate way in
-  grid[idx(bx1,groundY-2)]='N';
+  // a low window on the right as an alternate way out to the alley
+  grid[idx(bx1,groundY-1)]='N';
   // loot: the till (bonus) and the cashbox (the job)
   loot = [ {x:20,y:groundY-1,val:120,type:'coin',taken:false},
            {x:33,y:groundY-1,val:500,type:'box',taken:false} ];
@@ -257,8 +257,8 @@ function genCountingHouse(){
   ];
   for(const [x,y,lk,p,label] of dspec){ grid[idx(x,y)]='D'; doors.set(idx(x,y),{open:false,locked:!!lk,pins:p,label,x,y}); }
 
-  grid[idx(bx1, s2+1)] = 'N';
-  grid[idx(bx0, s1+2)] = 'N';
+  grid[idx(bx1, s3-1)] = 'N';   // right wall, mid storey — at body height
+  grid[idx(bx0, s2-1)] = 'N';   // left wall, upper storey — at body height
 
   for(const x of [34,35,36,37]) grid[idx(x,groundY)] = 'w';
 

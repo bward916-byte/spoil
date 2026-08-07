@@ -133,133 +133,145 @@ let floorType;       // per-floor surface tag for loudness (carpet/tile) keyed b
 let doors;           // Map cell -> {open,locked,pins,label,x,y}
 let openWin, glass;  // Sets of window cells opened / smashed
 let ropes;           // Set of cells with a deployed/there rope
-let lamps, loot, guards, lightmap, exitPx, decor;
+let lamps, loot, guards, lightmap, exitPx, decor, hideCells;
+let level=0;
+const LEVEL_NAMES = ['The Chandler\u2019s Shop', 'The Counting House'];
+const LEVELS = LEVEL_NAMES.length;
 let exploredSet, visSet;
 let player, mode, msgState, floaters, rings, shake, stats, cam, gameT;
 let tutMsg={text:'',t:0}, tutSeen=new Set();
+let levelIntroT=0, introLevel=-1;
+function nextAfterEnd(){ if(mode==='escaped') level=(level+1)%LEVELS; introLevel=-1; resetRun(); mode='play'; }
 let lock, action;
 
 function fill(x0,y0,x1,y1,ch){ for(let y=y0;y<=y1;y++) for(let x=x0;x<=x1;x++) if(inb(x,y)) grid[idx(x,y)]=ch; }
 function hline(x0,x1,y,ch){ for(let x=x0;x<=x1;x++) if(inb(x,y)) grid[idx(x,y)]=ch; }
 function vline(x,y0,y1,ch){ for(let y=y0;y<=y1;y++) if(inb(x,y)) grid[idx(x,y)]=ch; }
 
-function genLevel(){
+function baseWorld(groundY){
   grid = new Array(NC).fill(' ');
   mat = new Array(NC).fill('L');
   dug = new Array(NC).fill(false);
   shored = new Array(NC).fill(false);
   probed = new Array(NC).fill(false);
   floorType = new Array(NC).fill('=');
-  doors = new Map(); openWin = new Set(); glass = new Set(); ropes = new Set();
-
-  // ---- vertical layout ----
-  // y 0..3 sky, y4 street level (ground surface), building y5..? , earth below groundY
-  const groundY = 18;         // the street/topsoil line
-  // sky is air. bedrock frame:
-  hline(0, W-1, H-1, '#');
-  vline(0, 0, H-1, '#'); vline(W-1, 0, H-1, '#');
-
-  // ---- the street ----
+  doors = new Map(); openWin = new Set(); glass = new Set(); ropes = new Set(); hideCells = new Set();
+  // bedrock frame
+  hline(0, W-1, H-1, '#'); vline(0, 0, H-1, '#'); vline(W-1, 0, H-1, '#');
+  // street
   hline(1, W-2, groundY, '='); for(let x=1;x<=W-2;x++) floorType[idx(x,groundY)]='street';
-  // exit: lit alley mouth on the right at street level
+  // exit: lit alley on the right
   for(let y=groundY-3; y<groundY; y++){ grid[idx(W-3,y)]=' '; grid[idx(W-2,y)]='X'; }
   grid[idx(W-2,groundY-1)]='X'; grid[idx(W-3,groundY-1)]='X';
   exitPx = { x:(W-2.5)*T, y:(groundY-2)*T };
+}
 
-  // ---- the counting house: x 8..40, three storeys above street + a cellar below ----
-  const bx0=8, bx1=40;
-  const roofY = 5, s1=8, s2=12, s3=16; // floor slab rows for storey ceilings/floors
-  // outer shell walls
+function genLevel(){
+  if(level===0) genShop(); else genCountingHouse();
+  buildHideCells();
+  bakeLight();
+}
+
+function buildHideCells(){
+  hideCells = new Set();
+  const hideable = { bookcase:1, cabinet:1, barrel:1, crate:1, curtain:1 };
+  for(const d of (decor||[])) if(hideable[d.t] && !d.wall) hideCells.add(idx(d.x, d.y-1));
+}
+
+// ---------- LEVEL 1: an easy bit of petty theft ----------
+function genShop(){
+  const groundY=18;
+  baseWorld(groundY);
+  const bx0=12, bx1=36, roofY=13;
   vline(bx0, roofY, groundY, '#'); vline(bx1, roofY, groundY, '#');
-  hline(bx0, bx1, roofY, '#');                       // roof
-  // storey floors (walkable slabs)
+  hline(bx0, bx1, roofY, '#');
+  hline(bx0+1, bx1-1, groundY, '=');
+  for(let x=bx0+1;x<=bx1-1;x++) floorType[idx(x,groundY)]='tile';
+  // back-room partition
+  vline(28, roofY+1, groundY-1, '#');
+  // shop door — UNLOCKED (just walk in); back-room door is an easy 3-pin
+  grid[idx(bx0,groundY-1)]='D'; doors.set(idx(bx0,groundY-1),{open:false,locked:false,pins:0,label:'shop door',x:bx0,y:groundY-1});
+  grid[idx(28,groundY-1)]='D'; doors.set(idx(28,groundY-1),{open:false,locked:true,pins:3,label:'back-room door',x:28,y:groundY-1});
+  // a low window on the right as an alternate way in
+  grid[idx(bx1,groundY-2)]='N';
+  // loot: the till (bonus) and the cashbox (the job)
+  loot = [ {x:20,y:groundY-1,val:120,type:'coin',taken:false},
+           {x:33,y:groundY-1,val:500,type:'box',taken:false} ];
+  lamps = [ {x:6,y:groundY-1.5,r:7}, {x:W-6.5,y:groundY-1.5,r:7.5}, {x:20,y:groundY-1.5,r:6}, {x:32,y:groundY-1.5,r:5} ];
+  // one slow, none-too-sharp watchman in the front room
+  const g=mkGuard('watchman', [[14,groundY-1],[26,groundY-1]], true, groundY-1); g.aware=0.7; guards=[g];
+  // solid ground — no tunnelling on the easy job
+  for(let y=groundY+1;y<H-1;y++) for(let x=1;x<W-1;x++){ grid[idx(x,y)]='K'; mat[idx(x,y)]='K'; }
+  // furnishings — the bookcases and barrels double as hiding spots
+  decor = [ {x:16,y:groundY,t:'bookcase'}, {x:24,y:groundY,t:'bookcase'},
+            {x:18,y:groundY,t:'barrel'}, {x:20,y:groundY,t:'desk'},
+            {x:22,y:groundY,t:'stool'}, {x:31,y:groundY,t:'crate'}, {x:33,y:groundY,t:'cabinet'} ];
+}
+
+// ---------- LEVEL 2: the counting house (the full heist) ----------
+function genCountingHouse(){
+  const groundY = 18;
+  baseWorld(groundY);
+  const bx0=8, bx1=40;
+  const roofY = 5, s1=8, s2=12, s3=16;
+  vline(bx0, roofY, groundY, '#'); vline(bx1, roofY, groundY, '#');
+  hline(bx0, bx1, roofY, '#');
   for(const fy of [s1, s2, s3, groundY]) hline(bx0+1, bx1-1, fy, '=');
-  // rooms get names/surfaces: top floor carpeted study, mid tiled hall, ground counting room
   for(let x=bx0+1;x<=bx1-1;x++){ floorType[idx(x,s1)]='carpet'; floorType[idx(x,s2)]='tile'; }
 
-  // interior partition walls (with door gaps)
-  vline(24, roofY+1, s1-1, '#'); grid[idx(24,roofY+2)]=' ';  // attic split
-  vline(20, s1+1, s2-1, '#');    // upper landing wall
+  vline(24, roofY+1, s1-1, '#'); grid[idx(24,roofY+2)]=' ';
+  vline(20, s1+1, s2-1, '#');
   vline(30, s1+1, s2-1, '#');
-  vline(28, s2+1, s3-1, '#');    // mid wall
+  vline(28, s2+1, s3-1, '#');
   vline(16, s2+1, s3-1, '#');
-  vline(32, s3+1, groundY-1, '#'); // strongroom wall on ground floor (right side)
+  vline(32, s3+1, groundY-1, '#');
 
-  // ---- ladders / internal stairs connecting storeys ----
-  // a service ladder shaft on the left interior (x=12) from ground up to attic
   for(let y=roofY+1; y<groundY; y++) if(grid[idx(12,y)]===' '||grid[idx(12,y)]==='=') grid[idx(12,y)]='H';
-  // punch through the slabs where the ladder passes
   for(const fy of [s1,s2,s3]) grid[idx(12,fy)]='H';
-  // a short stair on the right from ground to mid (x=36)
   for(let y=s2+1; y<groundY; y++) grid[idx(36,y)]='H';
   grid[idx(36,s3)]='H';
 
-  // ---- doors ----
   const dspec = [
-    [bx0, groundY-1, 1, 4, 'front door'],     // street entrance, left wall, locked
+    [bx0, groundY-1, 1, 3, 'front door'],       // eased 4->3
     [24, groundY-1, 0, 0, 'counting-room door'],
-    [32, groundY-2, 1, 6, 'strongroom door'], // guards the vault on ground floor right
+    [32, groundY-2, 1, 4, 'strongroom door'],   // eased 6->4
     [20, s2-1, 0, 0, 'landing door'],
     [28, s3-1, 0, 0, 'hall door'],
   ];
-  for(const [x,y,lk,p,label] of dspec){
-    grid[idx(x,y)] = 'D';
-    doors.set(idx(x,y), { open:false, locked:!!lk, pins:p, label, x, y });
-  }
+  for(const [x,y,lk,p,label] of dspec){ grid[idx(x,y)]='D'; doors.set(idx(x,y),{open:false,locked:!!lk,pins:p,label,x,y}); }
 
-  // ---- windows ----
-  grid[idx(bx1, s2+1)] = 'N';    // right wall, mid storey
-  grid[idx(bx0, s1+2)] = 'N';    // left wall, top storey
-  openWin = new Set(); glass = new Set();
+  grid[idx(bx1, s2+1)] = 'N';
+  grid[idx(bx0, s1+2)] = 'N';
 
-  // ---- weak floorboards (dig up targets): under the strongroom ----
-  // strongroom is ground floor right of x=32; its floor is groundY
   for(const x of [34,35,36,37]) grid[idx(x,groundY)] = 'w';
 
-  // ---- loot ----
   loot = [
-    { x:14, y:s1-1, val:150, type:'coin', taken:false },   // attic purse
-    { x:26, y:s2-1, val:150, type:'coin', taken:false },   // mid hall
+    { x:14, y:s1-1, val:150, type:'coin', taken:false },
+    { x:26, y:s2-1, val:150, type:'coin', taken:false },
     { x:18, y:groundY-1, val:150, type:'coin', taken:false },
-    { x:37, y:groundY-1, val:2000, type:'box', taken:false }, // the strongbox, in the vault
+    { x:37, y:groundY-1, val:2000, type:'box', taken:false },
   ];
-
-  // ---- lamps (x,y tile centers, radius tiles) ----
   lamps = [
     { x:4.5,  y:groundY-1.5, r:7.5 },
-    { x:W-6.5,y:groundY-1.5, r:7.5 },   // near the exit
-    { x:26,   y:groundY-1.5, r:6.5 },   // street lamp in front of the house
-    { x:14,   y:s2-1.5,      r:6 },     // interior mid
-    { x:35,   y:groundY-1.5, r:5.5 },   // vault sconce — lights the strongbox
+    { x:W-6.5,y:groundY-1.5, r:7.5 },
+    { x:26,   y:groundY-1.5, r:6.5 },
+    { x:14,   y:s2-1.5,      r:6 },
+    { x:35,   y:groundY-1.5, r:5.5 },
   ];
-
-  // ---- guards patrolling floors (side-view: they walk a storey, can take ladders) ----
   guards = [
     mkGuard('street', [[10,groundY-1],[W-8,groundY-1]], true, groundY-1),
     mkGuard('ground', [[bx0+2,groundY-1],[30,groundY-1]], false, groundY-1),
     mkGuard('mid',    [[bx0+2,s2-1],[bx1-2,s2-1]], true, s2-1),
   ];
-
-  // ---- earth below groundY ----
   genEarth(groundY, bx0, bx1);
-
-  // ---- decorative furnishings (purely visual) ----
-  // {x, y(floor row it stands on), type}; wall art uses w:true at its own cell
   decor = [
-    // attic (floor s1=8): crates & a barrel
     {x:16,y:s1,t:'crate'}, {x:17,y:s1,t:'crateSm'}, {x:30,y:s1,t:'barrel'},
-    // upper storey (floor s2=12): bookcase, desk, chair
     {x:15,y:s2,t:'bookcase'}, {x:32,y:s2,t:'desk'}, {x:34,y:s2,t:'chair'},
-    // mid storey (floor s3=16): table, rug, wall painting
     {x:14,y:s3,t:'table'}, {x:34,y:s3,t:'crate'}, {x:22,y:s3,t:'rug',w:false},
     {x:16,y:14,t:'painting',wall:true},
-    // ground counting room (floor 18): desk & stool
     {x:14,y:groundY,t:'desk'}, {x:16,y:groundY,t:'stool'},
-    // strongroom: a strongbox pedestal / cabinet beside the loot
     {x:34,y:groundY,t:'cabinet'}, {x:30,y:groundY,t:'sconceStand'},
   ];
-
-  bakeLight();
 }
 
 function genEarth(groundY, bx0, bx1){
@@ -452,13 +464,13 @@ function resetRun(){
   genLevel();
   player = {
     x: 3*T+T/2, y: (18-1)*T+T/2,     // on the street, left end (groundY-1 = 17)
-    vx:0, vy:0, onGround:true, climbing:false, tier:2, sneak:false, dir:1,
+    vx:0, vy:0, onGround:true, climbing:false, tier:2, sneak:false, dir:1, hidden:false,
     stamina:100, spoil:0, picks:3, probes:10, timbers:6, ropesLeft:3,
     lootVal:0, stepT:0, breathT:0, lowT:0, coyote:0, walkPhase:0, prevH:TIERS[2].h,
   };
   exploredSet=new Set(); visSet=new Set();
   rings=[]; floaters=[]; shake=0; gameT=0;
-  msgState={text:'',t:0}; lock=null; action=null; tutMsg={text:'',t:0};
+  msgState={text:'',t:0}; lock=null; action=null; tutMsg={text:'',t:0}; levelIntroT=0;
   cam={x:player.x, y:player.y};
   stats={ ghost:true, snapped:false, glass:false, collapsed:false, alerted:false, dug:0, picked:0, cause:'' };
 }
@@ -582,6 +594,9 @@ function playerUpdate(dt){
   }
   // ---- escape ----
   if(grid[pcell()]==='X'){ mode='escaped'; }
+
+  // ---- hidden: sneaking into a bookcase/cabinet/barrel breaks line of sight ----
+  player.hidden = player.sneak && !player.climbing && hideCells && hideCells.has(pcell());
 
   updateAction(dt);
 }
@@ -775,6 +790,7 @@ function lockUpdate(dt){
 function guardV(){ return player.tier===undefined?0:1; }
 function guardCanSee(g){
   if(mode!=='play') return false;
+  if(player.hidden) return false;
   const dx=player.x-g.x, dy=player.y-g.y;
   const d=Math.hypot(dx,dy); if(d>210) return false;
   // horizontal cone: must be roughly in front, within a vertical band (same storey-ish)
@@ -882,7 +898,9 @@ function step(dt){
   for(const f of floaters){ f.t-=dt; f.y-=dt*10; } floaters=floaters.filter(f=>f.t>0);
   if(msgState.t>0) msgState.t-=dt;
   if(tutMsg.t>0) tutMsg.t-=dt;
+  if(levelIntroT>0) levelIntroT-=dt;
   if(mode!=='play'){ return; }
+  if(introLevel!==level){ introLevel=level; levelIntroT=2.8; }
   if(lock){ lockUpdate(dt); updateAction(0); }
   else { playerUpdate(dt); tutorialTick(); }
   for(const g of guards) guardUpdate(g,dt);
@@ -919,6 +937,8 @@ function tutorialTick(){
   // a guard in view
   for(const g of guards){ const gi=idx((g.x/T)|0,(g.y/T)|0);
     if(visSet.has(gi) && Math.hypot(player.x-g.x,player.y-g.y)<T*8){ tut('guard', `A guard. They only see the way they face — ${sneak} or slip behind.`); break; } }
+  // standing at a hiding spot
+  if(hideCells && hideCells.has(c)) tut('hide', `A hiding spot. Turn on ${sneak} here and guards won\u2019t see you.`);
   // facing the strongbox
   if(loot.some(l=>!l.taken&&l.type==='box'&&idx(l.x,l.y)===fi)) tut('box', `The strongbox. Hold ${act} to empty it, then run for the lit alley.`);
   // has the loot, remind to escape
@@ -953,7 +973,7 @@ function onKeyDown(e){
   ac();
   if([' ','arrowup','arrowdown','arrowleft','arrowright'].includes(k)) e.preventDefault();
   if(mode==='title'){ if(k==='enter'||k===' ') mode='play'; return; }
-  if(mode==='caught'||mode==='escaped'){ if(k==='r'||k==='enter'){ resetRun(); mode='play'; } return; }
+  if(mode==='caught'||mode==='escaped'){ if(k==='r'||k==='enter'){ nextAfterEnd(); } return; }
   if(mode!=='play') return;
   if(fresh) handlePress(k);
 }
@@ -986,7 +1006,7 @@ function stickRelease(){ touch.stickId=null; touch.vec=[0,0]; touch.nub=[STICK.x
 function goFullscreen(){ try{ const el=document.documentElement; if(el&&el.requestFullscreen&&!document.fullscreenElement){ el.requestFullscreen().then(()=>{ try{ screen.orientation&&screen.orientation.lock&&screen.orientation.lock('landscape').catch(()=>{});}catch(_){}}).catch(()=>{}); } }catch(_){} }
 function onTouchStart(e){ e.preventDefault(); touch.used=true; ac();
   if(mode==='title'){ goFullscreen(); mode='play'; return; }
-  if(mode==='caught'||mode==='escaped'){ resetRun(); mode='play'; return; }
+  if(mode==='caught'||mode==='escaped'){ nextAfterEnd(); return; }
   for(const t of e.changedTouches){ const [cx,cy]=canvasXY(t); let hit=null;
     for(const b of touchButtons) if(Math.hypot(cx-b.x,cy-b.y)<=b.r+10){ hit=b; break; }
     if(hit){ if(hit.k==='tension'){ touch.tension=true; touch.holds.set(t.identifier,'tension'); }
@@ -1043,6 +1063,7 @@ function render(){
   drawVignette();
   drawObjective();
   drawTutorial();
+  drawLevelIntro();
   drawHUD();
   if(lock) drawLock();
   buildTouchButtons(); drawTouchUI();
@@ -1179,11 +1200,24 @@ function drawObjective(){
   if(mode!=='play') return;
   ctx.setTransform(1,0,0,1,0,0);
   const got = loot.some(l=>l.type==='box'&&l.taken);
-  const txt = got ? 'ESCAPE \u2014 reach the lit alley on the right' : 'GOAL \u2014 reach the strongbox in the ground-floor vault';
   ctx.textAlign='center'; ctx.textBaseline='alphabetic';
-  ctx.font='11px monospace'; ctx.fillStyle=got?'rgba(78,156,134,0.9)':'rgba(120,133,150,0.85)';
-  ctx.fillText(txt, CW/2, 22);
+  ctx.font='11px monospace'; ctx.fillStyle=got?'rgba(78,156,134,0.95)':'rgba(140,150,165,0.9)';
+  ctx.fillText(`LEVEL ${level+1} \u00b7 ${LEVEL_NAMES[level]}  \u2014  ${got?'ESCAPE to the lit alley (right)':'take the strongbox'}`, CW/2, 22);
   ctx.textAlign='left';
+}
+
+function drawLevelIntro(){
+  if(levelIntroT<=0 || mode!=='play') return;
+  ctx.setTransform(1,0,0,1,0,0);
+  const gh=CH-HUD_H, a=clamp(levelIntroT/0.6,0,1);
+  ctx.globalAlpha=a; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillStyle=PAL.sodium; ctx.font='bold 13px monospace';
+  ctx.fillText(`LEVEL ${level+1}`, CW/2, gh/2-22);
+  ctx.fillStyle=PAL.chalk; ctx.font='bold 30px monospace';
+  ctx.fillText(LEVEL_NAMES[level], CW/2, gh/2+8);
+  ctx.fillStyle=PAL.draft; ctx.font='12px monospace';
+  ctx.fillText(level===0?'a quiet bit of petty theft \u2014 in, grab the cashbox, out':'the big job \u2014 three storeys, a vault, and the earth beneath', CW/2, gh/2+36);
+  ctx.globalAlpha=1; ctx.textAlign='left'; ctx.textBaseline='alphabetic';
 }
 
 function drawTutorial(){
@@ -1434,7 +1468,11 @@ function drawPlayer(){ const h=TIERS[player.tier].h; const lit=lightAtPx(player.
   // burglar: dark cloth, pale hands/face, sodium tool in the lead hand
   const cols={ skin:'#c7b299', cloth:'#1b2436', accent:PAL.sodium, line:'#0A0C11', hat:'#141a26' };
   const feetY = player.y + h*0.5;
+  if(player.hidden) ctx.globalAlpha=0.45;
   drawHuman(player.x, feetY, player.dir, pose, player.walkPhase, cols, L);
+  ctx.globalAlpha=1;
+  if(player.hidden){ ctx.fillStyle=PAL.verd; ctx.font='bold 8px monospace'; ctx.textAlign='center';
+    ctx.fillText('HIDDEN', player.x, feetY-h-6); ctx.textAlign='left'; }
   // action ring above the head
   if(action){ const topY = feetY - h - 8;
     ctx.strokeStyle=PAL.sodium; ctx.lineWidth=2; ctx.beginPath();
@@ -1673,6 +1711,8 @@ function drawTitle(){
   ctx.fillText('S P O I L', CW/2, 118);
   ctx.font='13px monospace'; ctx.fillStyle=PAL.draft;
   ctx.fillText('a house in cross-section \u2014 rob it from any angle', CW/2, 146);
+  ctx.fillStyle='rgba(233,162,59,0.85)'; ctx.font='12px monospace';
+  ctx.fillText('start small: petty theft tonight, bigger jobs to come', CW/2, 162);
 
   // one centered line of essential controls, then let the game teach the rest
   ctx.font='12px monospace'; ctx.fillStyle='rgba(120,133,150,0.9)';
@@ -1747,7 +1787,7 @@ function boot(){
   canvas.addEventListener('touchcancel', onTouchEnd, { passive:false });
   canvas.addEventListener('contextmenu', e=>e.preventDefault&&e.preventDefault());
   canvas.addEventListener('mousemove', e=>{ const r=canvas.getBoundingClientRect(); mouse.x=(e.clientX-r.left)*(CW/r.width); mouse.y=(e.clientY-r.top)*(CH/r.height); });
-  canvas.addEventListener('mousedown', ()=>{ ac(); if(mode==='title') mode='play'; else if(mode==='caught'||mode==='escaped'){ resetRun(); mode='play'; } });
+  canvas.addEventListener('mousedown', ()=>{ ac(); if(mode==='title') mode='play'; else if(mode==='caught'||mode==='escaped'){ nextAfterEnd(); } });
   // When the device rotates or the window resizes, any in-progress joystick anchor
   // (stored in canvas pixels) becomes stale and movement directions can go haywire.
   // Drop all live input so the player starts clean in the new layout.
@@ -1776,6 +1816,8 @@ if(typeof window!=='undefined'){
     keys, mouse, touch, tryInteract, startAction, emitSound, handlePress,
     onTouchStart, onTouchMove, onTouchEnd, buildTouchButtons, get touchButtons(){ return touchButtons; },
     idx, W, H, T, CW, CH, VW, VH, HUD_H,
+    get level(){ return level; }, set level(v){ level=v; }, get LEVELS(){ return LEVELS; },
+    get hideCells(){ return hideCells; }, get decor(){ return decor; },
   };
   if(typeof document!=='undefined' && document.getElementById && document.getElementById('g')) boot();
   else if(typeof document!=='undefined' && document.addEventListener) document.addEventListener('DOMContentLoaded', boot);

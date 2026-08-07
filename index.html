@@ -132,7 +132,7 @@ let level=0;
 const LEVEL_NAMES = ['The Chandler\u2019s Shop', 'The Counting House'];
 const LEVELS = LEVEL_NAMES.length;
 const SAVE_KEY = 'spoil.progress.v1';
-const VERSION = '2026.08.07-0404';
+const VERSION = '2026.08.07-0405';
 let prog = { xp:0, best:0, level:0 };
 function save(){ try{ if(typeof localStorage!=='undefined') localStorage.setItem(SAVE_KEY, JSON.stringify(prog)); }catch(e){} }
 function load(){ try{ if(typeof localStorage!=='undefined'){ const r=localStorage.getItem(SAVE_KEY);
@@ -822,7 +822,7 @@ function guardUpdate(g,dt){
       }
       g.sweepT=(g.sweepT||0)+dt;
       if(!see && g.sweepT>7){ g.floor=clamp(g.floor+9,0,60); g.aware=Math.min(2.2,g.aware*1.1); g.susp=g.floor; g.shouted=false; g.state='patrol'; g.sweepT=0; floater(g.x,g.y-20,'Hm.',PAL.draft); }
-      if(g.state==='alert' && Math.hypot(player.x-g.x,player.y-g.y)<18 && Math.abs(player.y-g.y)<T){ stats.cause='A hand closes on your collar.'; mode='caught'; }
+      if(g.state==='alert' && Math.hypot(player.x-g.x,player.y-g.y)<18 && Math.abs(player.y-g.y)<T){ stats.cause='The watchman catches you by the sleeve!'; mode='caught'; }
       break;
     }
   }
@@ -1714,8 +1714,8 @@ function drawTitleHouse(cx,cy){
 function drawEnd(escaped){
   uiTf();
   ctx.fillStyle=PAL.void; ctx.globalAlpha=0.9; ctx.fillRect(0,0,CW,CH); ctx.globalAlpha=1; ctx.textAlign='center'; ctx.textBaseline='alphabetic';
-  if(!escaped){ ctx.fillStyle=PAL.oxide; ctx.font='bold 40px monospace'; ctx.fillText('TAKEN',CW/2,210);
-    ctx.fillStyle=PAL.chalk; ctx.font='14px monospace'; ctx.fillText(stats.cause||'The night ends in irons.',CW/2,248);
+  if(!escaped){ ctx.fillStyle=PAL.oxide; ctx.font='bold 40px monospace'; ctx.fillText('CAUGHT!',CW/2,210);
+    ctx.fillStyle=PAL.chalk; ctx.font='14px monospace'; ctx.fillText(stats.cause||'The watchman walks you home. Better luck next night!',CW/2,248);
     ctx.fillStyle=PAL.draft; ctx.font='13px monospace'; ctx.fillText(touch.used?'tap to run the job again':'press R to run the job again',CW/2,290); return; }
   const p=stats.payout||{rows:[['take',`${player.lootVal} coin`]],xp:0};
   ctx.fillStyle=PAL.verd; ctx.font='bold 36px monospace'; ctx.fillText('THE FENCE',CW/2,120);

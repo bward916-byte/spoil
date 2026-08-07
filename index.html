@@ -110,8 +110,9 @@ const isEarth = k => MAT[k] !== undefined;
 // ---------- movement tiers (horizontal) ----------
 // loudness base per footfall; stance affects how visible you are; height = collision box.
 const TIERS = [
-  { name:'SNEAK', spd:32, base:1, int:0.60, stance:0.60, h:14 },
-  { name:'WALK',  spd:66, base:6, int:0.46, stance:1.00, h:20 },
+  { name:'SNEAK', spd:32,  base:1, int:0.60, stance:0.60, h:14 },
+  { name:'WALK',  spd:66,  base:6, int:0.46, stance:1.00, h:20 },
+  { name:'RUN',   spd:150, base:9, int:0.30, stance:1.15, h:20 },  // outruns any guard — but the whole street hears it
 ];
 
 // surface loudness by what you're standing on
@@ -127,12 +128,20 @@ let floorType;       // per-floor surface tag for loudness (carpet/tile) keyed b
 let doors;           // Map cell -> {open,locked,pins,label,x,y}
 let openWin;         // Set of window cells opened (glass cut)
 let ropes;           // Set of cells with a deployed/there rope
-let lamps, loot, guards, lightmap, exitPx, decor, hideCells;
+let lamps, loot, guards, lightmap, exitPx, decor, hideCells, hood;
 let level=0;
-const LEVEL_NAMES = ['The Chandler\u2019s Shop', 'The Counting House'];
-const LEVELS = LEVEL_NAMES.length;
+const LEVEL_INFO = [
+  { name:'The Chandler\u2019s Shop', place:'Tallow Lane',
+    blurb:'The chandler shorted your wages and the rent falls due at dawn.',
+    goal:'take back what\u2019s owed \u2014 the cashbox in the back room' },
+  { name:'The Counting House', place:'Guilder\u2019s Row',
+    blurb:'Word on the lane: the banker\u2019s strongbox sits fat behind three storeys of locks.',
+    goal:'take the strongbox from the ground-floor vault' },
+];
+const LEVEL_NAMES = LEVEL_INFO.map(l=>l.name);
+const LEVELS = LEVEL_INFO.length;
 const SAVE_KEY = 'spoil.progress.v1';
-const VERSION = '2026.08.07-0408';
+const VERSION = '2026.08.07-0414';
 let prog = { xp:0, best:0, level:0 };
 function save(){ try{ if(typeof localStorage!=='undefined') localStorage.setItem(SAVE_KEY, JSON.stringify(prog)); }catch(e){} }
 function load(){ try{ if(typeof localStorage!=='undefined'){ const r=localStorage.getItem(SAVE_KEY);
@@ -180,6 +189,9 @@ function buildHideCells(){
 function genShop(){
   const groundY=18;
   baseWorld(groundY);
+  // Tallow Lane: neighbours' houses flank the shop (backdrop only)
+  hood = [ {x0:2,x1:5,h:4,win:[1,2]}, {x0:6,x1:10,h:5,win:[1,3]},
+           {x0:38,x1:42,h:5,win:[2,3]}, {x0:43,x1:47,h:4,win:[1]}, {x0:49,x1:55,h:6,win:[2,4]}, {x0:56,x1:59,h:4,win:[1,3]} ];
   const bx0=12, bx1=36, roofY=13;
   vline(bx0, roofY, groundY, '#'); vline(bx1, roofY, groundY, '#');
   hline(bx0, bx1, roofY, '#');
@@ -210,6 +222,9 @@ function genShop(){
 function genCountingHouse(){
   const groundY = 18;
   baseWorld(groundY);
+  // Guilder's Row: grand terraces either side of the counting house (backdrop only)
+  hood = [ {x0:1,x1:6,h:6,win:[2,4]},
+           {x0:42,x1:46,h:7,win:[2,5]}, {x0:47,x1:52,h:5,win:[1,3]}, {x0:53,x1:59,h:8,win:[2,4,6]} ];
   const bx0=8, bx1=40;
   const roofY = 5, s1=8, s2=12, s3=16;
   vline(bx0, roofY, groundY, '#'); vline(bx1, roofY, groundY, '#');
@@ -493,7 +508,8 @@ function pcell(){ const [x,y]=pTile(); return idx(x,y); }
 function footCell(){ const x=(player.x/T)|0, y=((player.y+TIERS[player.tier].h*0.5+1)/T)|0; return inb(x,y)?idx(x,y):-1; }
 function faceCell(){ const x=((player.x+player.dir*14)/T)|0, y=(player.y/T)|0; return inb(x,y)?idx(x,y):-1; }
 function playerUpdate(dt){
-  player.tier = player.sneak ? 0 : 1;    // two states only: sneak or walk
+  const runInput = keys[' '] || (touch.stickId!=null && Math.abs(touch.vec[0])>0.88);
+  player.tier = runInput ? 2 : (player.sneak ? 0 : 1);   // sneak, walk, or run (run is loud)
   const tier = TIERS[player.tier];
   let ix=0, iy=0;
   if(keys['a']||keys['arrowleft']) ix-=1;
@@ -596,7 +612,7 @@ function playerUpdate(dt){
   if(grid[pcell()]==='X' && mode==='play'){ mode='escaped'; settleHeist(); }
 
   // ---- hidden: sneaking into a bookcase/cabinet/barrel breaks line of sight ----
-  player.hidden = player.sneak && !player.climbing && hideCells && hideCells.has(pcell());
+  player.hidden = player.sneak && player.tier===0 && !player.climbing && hideCells && hideCells.has(pcell());
 
   updateAction(dt);
 }
@@ -904,6 +920,9 @@ function tutorialTick(){
     if(visSet.has(gi) && Math.hypot(player.x-g.x,player.y-g.y)<T*8){ tut('guard', `A guard. They only see the way they face — ${sneak} or slip behind.`); break; } }
   // standing at a hiding spot
   if(hideCells && hideCells.has(c)) tut('hide', `A hiding spot. Turn on ${sneak} here and guards won\u2019t see you.`);
+  // spotted! teach the sprint
+  if(guards.some(g=>g.state==='alert')) tut('run', T_? 'Spotted! Push the stick ALL the way to RUN \u2014 fast but loud. Break sight, then hide.'
+                                                    : 'Spotted! Hold SPACE to RUN \u2014 fast but loud. Break sight, then hide.');
   // facing the strongbox
   if(loot.some(l=>!l.taken&&l.type==='box'&&idx(l.x,l.y)===fi)) tut('box', `The strongbox. Hold ${act} to empty it, then run for the lit alley.`);
   // has the loot, remind to escape
@@ -1014,6 +1033,7 @@ function render(){
   const x1=Math.min(W-1,((cam.x+VW)/T)|0), y1=Math.min(H-1,((cam.y+VH)/T)|0);
 
   drawSky();
+  drawHood();
   drawWorld(x0,y0,x1,y1);
   drawDecor();
   drawSewerWater(x0,y0,x1,y1);
@@ -1065,6 +1085,60 @@ function drawSky(){
     ctx.fillStyle='rgba(14,18,28,0.5)';
     ctx.beginPath(); ctx.ellipse(cxp,my+2,26,7,0,0,TAU); ctx.fill();
     ctx.beginPath(); ctx.ellipse(cxp+16,my-2,16,6,0,0,TAU); ctx.fill();
+  }
+  // distant skyline — far rooftops with slow parallax
+  const par=cam.x*0.55, gY=18*T;
+  ctx.fillStyle='rgba(13,17,26,0.85)';
+  for(let k=0;k<26;k++){ const bw=40+((k*37)%50); let bx=k*64-((k*29)%22)+par*0.35;
+    const bh=T*(2.2+((k*13)%4)); const by=gY-T*1.6-bh;
+    if(bx+bw<cam.x-20||bx>cam.x+VW+20) continue;
+    ctx.fillRect(bx,by,bw,bh+ T*1.6);
+    // tiny far windows
+    ctx.fillStyle='rgba(233,162,59,0.10)';
+    for(let w=0;w<3;w++){ const wx=bx+8+((k*7+w*19)%(bw-14)); const wy=by+6+((k*11+w*13)% (bh-10|0));
+      if(((k+w)%4)<2) ctx.fillRect(wx,wy,2.4,3.4); }
+    ctx.fillStyle='rgba(13,17,26,0.85)';
+  }
+}
+
+function drawHood(){
+  if(!hood) return;
+  const gY=18*T;   // street line
+  for(const h of hood){
+    const x0=h.x0*T, x1=(h.x1+1)*T, top=gY-h.h*T;
+    if(x1<cam.x-T||x0>cam.x+VW+T) continue;
+    // facade
+    ctx.fillStyle='#10141d'; ctx.fillRect(x0,top,x1-x0,gY-top);
+    ctx.strokeStyle='rgba(46,66,96,0.55)'; ctx.lineWidth=1; ctx.strokeRect(x0+0.5,top+0.5,x1-x0-1,gY-top-1);
+    // roof ridge + eave
+    ctx.fillStyle='#0c0f16'; ctx.fillRect(x0-2,top-3,x1-x0+4,4);
+    ctx.fillStyle='rgba(191,203,217,0.06)'; ctx.fillRect(x0-2,top-3,x1-x0+4,1);
+    // chimney with smoke
+    const chx=x0+((h.x0*7)%((h.x1-h.x0)||1))*T+T*0.5;
+    ctx.fillStyle='#0c0f16'; ctx.fillRect(chx-3,top-12,7,10);
+    for(let p=0;p<3;p++){ const t=(gameT*0.5+p*0.8+h.x0)%2.4; const a=Math.max(0,0.16*(1-t/2.4));
+      ctx.fillStyle=`rgba(160,170,190,${a})`;
+      ctx.beginPath(); ctx.arc(chx+Math.sin(gameT+p+h.x0)*3, top-14-t*12, 2.2+t*1.6, 0, TAU); ctx.fill(); }
+    // door at street level
+    const dx=x0+T*0.6;
+    ctx.fillStyle='#171d29'; ctx.fillRect(dx,gY-T*0.9,T*0.55,T*0.9);
+    ctx.fillStyle='rgba(233,162,59,0.35)'; ctx.fillRect(dx+T*0.4,gY-T*0.5,2,2);
+    // windows — some warm-lit, curtained; some dark
+    for(let fx=h.x0;fx<=h.x1;fx++) for(const wy of h.win){
+      const wx=fx*T+T*0.28, wyy=gY-wy*T-T*0.55, ww=T*0.44, wh=T*0.6;
+      const lit = ((fx*31+wy*17+h.x0*7)%5)<2;
+      if(lit){ const gl=ctx.createRadialGradient(wx+ww/2,wyy+wh/2,1, wx+ww/2,wyy+wh/2,T*0.9);
+        gl.addColorStop(0,'rgba(233,162,59,0.20)'); gl.addColorStop(1,'rgba(233,162,59,0)');
+        ctx.fillStyle=gl; ctx.fillRect(wx-T*0.5,wyy-T*0.5,ww+T,wh+T);
+        ctx.fillStyle='rgba(233,180,90,0.55)'; }
+      else ctx.fillStyle='rgba(24,32,46,0.9)';
+      ctx.fillRect(wx,wyy,ww,wh);
+      ctx.strokeStyle='rgba(10,12,17,0.8)'; ctx.strokeRect(wx+0.5,wyy+0.5,ww-1,wh-1);
+      ctx.beginPath(); ctx.moveTo(wx+ww/2,wyy); ctx.lineTo(wx+ww/2,wyy+wh); ctx.stroke();
+      if(lit && ((fx+wy)%3===0)){ // a figure at home behind the curtain
+        ctx.fillStyle='rgba(10,12,17,0.55)'; ctx.beginPath(); ctx.arc(wx+ww/2,wyy+wh*0.45,2.4,0,TAU); ctx.fill();
+        ctx.fillRect(wx+ww/2-2.6,wyy+wh*0.55,5.2,wh*0.45); }
+    }
   }
 }
 
@@ -1177,7 +1251,8 @@ function drawObjective(){
   const got = loot.some(l=>l.type==='box'&&l.taken);
   ctx.textAlign='center'; ctx.textBaseline='alphabetic';
   ctx.font='11px monospace'; ctx.fillStyle=got?'rgba(78,156,134,0.95)':'rgba(140,150,165,0.9)';
-  ctx.fillText(`LEVEL ${level+1} \u00b7 ${LEVEL_NAMES[level]}  \u2014  ${got?'ESCAPE to the lit alley (right)':'take the strongbox'}`, CW/2, 22);
+  const L=LEVEL_INFO[level];
+  ctx.fillText(`${L.name}, ${L.place}  \u2014  ${got?'ESCAPE to the lit alley (right)':L.goal}`, CW/2, 22);
   ctx.textAlign='left';
 }
 
@@ -1186,12 +1261,15 @@ function drawLevelIntro(){
   uiTf();
   const gh=CH-HUD_H, a=clamp(levelIntroT/0.6,0,1);
   ctx.globalAlpha=a; ctx.textAlign='center'; ctx.textBaseline='middle';
+  const L=LEVEL_INFO[level];
   ctx.fillStyle=PAL.sodium; ctx.font='bold 13px monospace';
-  ctx.fillText(`LEVEL ${level+1}`, CW/2, gh/2-22);
+  ctx.fillText(`NIGHT ${level+1} \u00b7 ${L.place.toUpperCase()}`, CW/2, gh/2-30);
   ctx.fillStyle=PAL.chalk; ctx.font='bold 30px monospace';
-  ctx.fillText(LEVEL_NAMES[level], CW/2, gh/2+8);
+  ctx.fillText(L.name, CW/2, gh/2);
   ctx.fillStyle=PAL.draft; ctx.font='12px monospace';
-  ctx.fillText(level===0?'a quiet bit of petty theft \u2014 in, grab the cashbox, out':'the big job \u2014 three storeys, a vault, and the earth beneath', CW/2, gh/2+36);
+  ctx.fillText(L.blurb, CW/2, gh/2+28);
+  ctx.fillStyle='rgba(233,162,59,0.8)';
+  ctx.fillText(L.goal, CW/2, gh/2+48);
   ctx.globalAlpha=1; ctx.textAlign='left'; ctx.textBaseline='alphabetic';
 }
 
@@ -1259,6 +1337,14 @@ function drawWorld(x0,y0,x1,y1){
         ctx.strokeStyle='rgba(0,0,0,0.22)'; ctx.lineWidth=1;
         ctx.beginPath(); ctx.moveTo(px,py+T-0.5); ctx.lineTo(px+T,py+T-0.5);    // underside shadow
         ctx.moveTo(px+T-0.5,py+2); ctx.lineTo(px+T-0.5,py+T-2); ctx.stroke();   // plank seam
+        if(floorType[i]==='street'){                                            // cobbles
+          ctx.strokeStyle='rgba(0,0,0,0.28)';
+          ctx.beginPath();
+          for(let cxx=0;cxx<T;cxx+=8){ ctx.moveTo(px+cxx+1,py+4); ctx.arc(px+cxx+4,py+4,3,Math.PI,0); }
+          for(let cxx=4;cxx<T;cxx+=8){ ctx.moveTo(px+cxx+1,py+9); ctx.arc(px+cxx+4,py+9,3,Math.PI,0); }
+          ctx.stroke();
+          ctx.fillStyle='rgba(191,203,217,0.04)'; ctx.fillRect(px+2,py+2,3,1); ctx.fillRect(px+12,py+7,3,1);
+        }
       } else if(k==='E' && !dug[i] && mat[i]!=='K'){
         // packed-earth grit: a few deterministic pebbles + a horizontal stratum line
         const seed=(x*73856+y*19349)>>>0;
@@ -1394,7 +1480,8 @@ function poseFor(p){
   if(p.climbing) return 'climb';
   if(p.tier===0) return 'crouch';
   if(!p.onGround) return 'stand';
-  return Math.abs(p.vx)>4 ? 'walk' : 'stand';
+  if(Math.abs(p.vx)<=4) return 'stand';
+  return p.tier===2 ? 'run' : 'walk';
 }
 
 function drawGuards(){ for(const g of guards){ const gi=idx((g.x/T)|0,(g.y/T)|0); if(!visSet.has(gi)&&!exploredSet.has(gi)) continue;
@@ -1452,8 +1539,9 @@ function drawHUD(){
   ctx.textAlign='left'; ctx.textBaseline='alphabetic';
 
   // movement state
-  ctx.font='bold 15px monospace'; ctx.fillStyle=player.sneak?PAL.verd:PAL.chalk;
-  ctx.fillText(player.sneak?'SNEAKING':'WALKING', 24, y0+30);
+  const st = player.tier===2?'RUNNING':player.sneak?'SNEAKING':'WALKING';
+  ctx.font='bold 15px monospace'; ctx.fillStyle= player.tier===2?PAL.sodium : player.sneak?PAL.verd:PAL.chalk;
+  ctx.fillText(st, 24, y0+30);
   ctx.font='10px monospace'; ctx.fillStyle=PAL.draft; ctx.fillText(isTouchDevice?'left stick: move & climb':'A/D move   W/S climb', 24, y0+52);
 
   // light gem
@@ -1676,8 +1764,8 @@ function drawTitle(){
 
   // one centered line of essential controls, then let the game teach the rest
   ctx.font='12px monospace'; ctx.fillStyle='rgba(120,133,150,0.9)';
-  ctx.fillText(isTouchDevice ? 'LEFT STICK  move & climb     ACT  interact     SNEAK  hide'
-                             : 'A / D move    W / S climb    E interact    SHIFT sneak', CW/2, 178);
+  ctx.fillText(isTouchDevice ? 'STICK  move (push hard to run)   ACT  interact   SNEAK  hide'
+                             : 'A / D move   W / S climb   E interact   SHIFT sneak   SPACE run', CW/2, 178);
 
   const blink=0.6+0.4*Math.sin(gameT*3);
   ctx.globalAlpha=blink; ctx.fillStyle=PAL.sodium; ctx.font='16px monospace';

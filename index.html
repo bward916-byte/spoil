@@ -65,8 +65,8 @@ const PAL = {
 
 // world is a tile grid seen edge-on. y grows downward (sky -> roof -> floors -> earth -> bedrock).
 const W = 64, H = 44, T = 24, NC = W * H;
-const SCALE = 3;                       // 3x zoom: each tile is 72 device px — people read big
-const VW = 384, VH = 168;              // world viewport (16 x 7 tiles visible)
+const SCALE = 2.4;                     // zoomed out: see guards coming with room to hide or run
+const VW = 480, VH = 210;              // world viewport (20 x 8.75 tiles visible)
 const HUD_H = 72;                      // slim HUD so the short landscape view keeps its height
 const CW = VW * SCALE, CH = VH * SCALE + HUD_H; // canvas: 1152 x 576 (fills a landscape phone, ~2:1)
 const STICK = { x:168, y:372, r:76, nub:34 };   // fixed on-screen thumbstick (lower-left)
@@ -132,7 +132,7 @@ let level=0;
 const LEVEL_NAMES = ['The Chandler\u2019s Shop', 'The Counting House'];
 const LEVELS = LEVEL_NAMES.length;
 const SAVE_KEY = 'spoil.progress.v1';
-const VERSION = '2026.08.07-0405';
+const VERSION = '2026.08.07-0408';
 let prog = { xp:0, best:0, level:0 };
 function save(){ try{ if(typeof localStorage!=='undefined') localStorage.setItem(SAVE_KEY, JSON.stringify(prog)); }catch(e){} }
 function load(){ try{ if(typeof localStorage!=='undefined'){ const r=localStorage.getItem(SAVE_KEY);
@@ -911,7 +911,7 @@ function tutorialTick(){
 }
 function computeVis(){
   const vis=new Set(); const px=player.x/T, py=player.y/T;
-  const rad = player.climbing?7: (grid[pcell()]==='S'||belowGround())?6:11;
+  const rad = player.climbing?9: (grid[pcell()]==='S'||belowGround())?8:14;
   vis.add(pcell());
   for(let a=0;a<360;a+=3){
     const dx=Math.cos(a*Math.PI/180)*0.45, dy=Math.sin(a*Math.PI/180)*0.45;
@@ -920,7 +920,7 @@ function computeVis(){
   }
   return vis;
 }
-function belowGround(){ return (player.y/T)|0 > 18; }
+function belowGround(){ return ((player.y/T)|0) > 18; }
 
 // ============================================================
 // Input
@@ -1784,7 +1784,7 @@ if(typeof window!=='undefined'){
     onTouchStart, onTouchMove, onTouchEnd, buildTouchButtons, get touchButtons(){ return touchButtons; },
     idx, W, H, T, CW, CH, VW, VH, HUD_H,
     get level(){ return level; }, set level(v){ level=v; }, get LEVELS(){ return LEVELS; },
-    get hideCells(){ return hideCells; }, get decor(){ return decor; },
+    get hideCells(){ return hideCells; }, get decor(){ return decor; }, get visSet(){ return visSet; },
   };
   if(typeof document!=='undefined' && document.getElementById && document.getElementById('g')) boot();
   else if(typeof document!=='undefined' && document.addEventListener) document.addEventListener('DOMContentLoaded', boot);

@@ -141,7 +141,7 @@ const LEVEL_INFO = [
 const LEVEL_NAMES = LEVEL_INFO.map(l=>l.name);
 const LEVELS = LEVEL_INFO.length;
 const SAVE_KEY = 'spoil.progress.v1';
-const VERSION = '2026.08.07-0414';
+const VERSION = '2026.08.07-0419';
 let prog = { xp:0, best:0, level:0 };
 function save(){ try{ if(typeof localStorage!=='undefined') localStorage.setItem(SAVE_KEY, JSON.stringify(prog)); }catch(e){} }
 function load(){ try{ if(typeof localStorage!=='undefined'){ const r=localStorage.getItem(SAVE_KEY);
@@ -181,7 +181,7 @@ function genLevel(){
 
 function buildHideCells(){
   hideCells = new Set();
-  const hideable = { bookcase:1, cabinet:1, barrel:1, crate:1 };
+  const hideable = { bookcase:1, cabinet:1, barrel:1, crate:1, armoire:1, clock:1, curtain:1, sacks:1 };
   for(const d of (decor||[])) if(hideable[d.t] && !d.wall) hideCells.add(idx(d.x, d.y-1));
 }
 
@@ -213,9 +213,13 @@ function genShop(){
   // solid ground — no tunnelling on the easy job
   for(let y=groundY+1;y<H-1;y++) for(let x=1;x<W-1;x++){ grid[idx(x,y)]='K'; mat[idx(x,y)]='K'; }
   // furnishings — the bookcases and barrels double as hiding spots
-  decor = [ {x:16,y:groundY,t:'bookcase'}, {x:24,y:groundY,t:'bookcase'},
-            {x:18,y:groundY,t:'barrel'}, {x:20,y:groundY,t:'desk'},
-            {x:22,y:groundY,t:'stool'}, {x:31,y:groundY,t:'crate'}, {x:33,y:groundY,t:'cabinet'} ];
+  decor = [ {x:14,y:groundY,t:'candleRack'}, {x:16,y:groundY,t:'bookcase'}, {x:18,y:groundY,t:'barrel'},
+            {x:19,y:groundY,t:'waxVat'}, {x:20,y:groundY,t:'desk'}, {x:22,y:groundY,t:'stool'},
+            {x:24,y:groundY,t:'bookcase'}, {x:26,y:groundY,t:'plant'},
+            {x:17,y:groundY-2,t:'shelfJars',wall:true}, {x:25,y:groundY-2,t:'shelfJars',wall:true},
+            {x:21,y:groundY-3,t:'chandelier',wall:true},
+            {x:30,y:groundY,t:'sacks'}, {x:31,y:groundY,t:'crate'}, {x:33,y:groundY,t:'cabinet'},
+            {x:34,y:groundY,t:'clock'} ];
 }
 
 // ---------- LEVEL 2: the counting house (the full heist) ----------
@@ -278,11 +282,20 @@ function genCountingHouse(){
   ];
   genEarth(groundY, bx0, bx1);
   decor = [
-    {x:16,y:s1,t:'crate'}, {x:17,y:s1,t:'crateSm'}, {x:30,y:s1,t:'barrel'},
-    {x:15,y:s2,t:'bookcase'}, {x:32,y:s2,t:'desk'}, {x:34,y:s2,t:'chair'},
-    {x:14,y:s3,t:'table'}, {x:34,y:s3,t:'crate'}, {x:22,y:s3,t:'rug',w:false},
-    {x:16,y:14,t:'painting',wall:true},
-    {x:14,y:groundY,t:'desk'}, {x:16,y:groundY,t:'stool'},
+    // attic: stores
+    {x:16,y:s1,t:'crate'}, {x:17,y:s1,t:'crateSm'}, {x:22,y:s1,t:'sacks'},
+    {x:28,y:s1,t:'armoire'}, {x:30,y:s1,t:'barrel'},
+    // upper storey: the study
+    {x:15,y:s2,t:'bookcase'}, {x:18,y:s2,t:'clock'}, {x:26,y:s2,t:'plant'},
+    {x:32,y:s2,t:'desk'}, {x:34,y:s2,t:'chair'}, {x:22,y:s2-2,t:'chandelier',wall:true},
+    // mid storey: the hall
+    {x:14,y:s3,t:'table'}, {x:18,y:s3,t:'hearth'}, {x:22,y:s3,t:'rug',w:false},
+    {x:26,y:s3,t:'curtain'}, {x:31,y:s3,t:'plant'}, {x:34,y:s3,t:'crate'},
+    {x:16,y:14,t:'painting',wall:true}, {x:24,y:14,t:'painting',wall:true},
+    // ground: the counting room
+    {x:14,y:groundY,t:'desk'}, {x:15,y:groundY,t:'scale'}, {x:16,y:groundY,t:'stool'},
+    {x:20,y:groundY,t:'clock'}, {x:22,y:groundY,t:'sacks'}, {x:26,y:groundY,t:'plant'},
+    // the strongroom
     {x:34,y:groundY,t:'cabinet'}, {x:30,y:groundY,t:'sconceStand'},
   ];
 }
@@ -1186,6 +1199,89 @@ function drawProp(t, bx, fy, L, vis){
       if(vis){ ctx.fillStyle='rgba(233,162,59,0.9)'; ctx.beginPath(); ctx.arc(bx+T/2,fy-20,2.4,0,TAU); ctx.fill(); } break;
     case 'rug': ctx.fillStyle=sh('#5a2836'); ctx.fillRect(bx-T,fy-2,T*3,3);
       ctx.fillStyle=sh(PAL.sodium); for(let r=-1;r<2;r++) ctx.fillRect(bx+r*T+T/2-4,fy-1,8,1); break;
+    case 'clock': { // grandfather clock with a swinging pendulum
+      ctx.fillStyle=sh('#3a2c18'); ctx.fillRect(bx+4,fy-42,T-8,42);
+      ctx.strokeStyle=sh('#1c140a'); ctx.strokeRect(bx+4,fy-42,T-8,42);
+      ctx.fillStyle=sh('#e8e2d2'); ctx.beginPath(); ctx.arc(bx+T/2,fy-34,5,0,TAU); ctx.fill();
+      ctx.strokeStyle=sh('#1c140a'); ctx.beginPath(); ctx.moveTo(bx+T/2,fy-34); ctx.lineTo(bx+T/2,fy-38);
+      ctx.moveTo(bx+T/2,fy-34); ctx.lineTo(bx+T/2+3,fy-33); ctx.stroke();
+      ctx.fillStyle=sh('#171008'); ctx.fillRect(bx+7,fy-26,T-14,22);
+      const sw=Math.sin(gameT*2.2)*5;
+      ctx.strokeStyle=sh('#caa24a'); ctx.beginPath(); ctx.moveTo(bx+T/2,fy-25); ctx.lineTo(bx+T/2+sw,fy-9); ctx.stroke();
+      ctx.fillStyle=sh(PAL.sodium); ctx.beginPath(); ctx.arc(bx+T/2+sw,fy-8,2.4,0,TAU); ctx.fill(); break; }
+    case 'armoire': ctx.fillStyle=sh('#4a3826'); ctx.fillRect(bx+2,fy-40,T-4,40);
+      ctx.strokeStyle=sh('#241a0e'); ctx.strokeRect(bx+2,fy-40,T-4,40);
+      ctx.beginPath(); ctx.moveTo(bx+T/2,fy-40); ctx.lineTo(bx+T/2,fy); ctx.stroke();
+      ctx.fillStyle=sh('#caa24a'); ctx.fillRect(bx+T/2-4,fy-22,2,4); ctx.fillRect(bx+T/2+2,fy-22,2,4); break;
+    case 'curtain': { // long standing drape
+      ctx.fillStyle=sh('#4a2136'); ctx.beginPath();
+      ctx.moveTo(bx+4,fy-40);
+      for(let wv=0;wv<=T-8;wv+=4) ctx.lineTo(bx+4+wv, fy-2+Math.sin(wv*0.9+gameT*1.5)*1.6);
+      ctx.lineTo(bx+T-4,fy-40); ctx.closePath(); ctx.fill();
+      ctx.strokeStyle=sh('#2a1220'); for(let wv=6;wv<T-8;wv+=5){ ctx.beginPath(); ctx.moveTo(bx+4+wv,fy-38); ctx.lineTo(bx+4+wv,fy-6); ctx.stroke(); }
+      ctx.fillStyle=sh('#caa24a'); ctx.fillRect(bx+2,fy-41,T-4,2); break; }
+    case 'hearth': { // fireplace with live fire
+      ctx.fillStyle=sh('#2a2530'); ctx.fillRect(bx,fy-22,T,22);
+      ctx.fillStyle=sh('#171420'); ctx.fillRect(bx+4,fy-16,T-8,16);
+      ctx.fillStyle=sh('#3a3444'); ctx.fillRect(bx-2,fy-24,T+4,3);
+      if(vis){ ctx.save(); ctx.globalCompositeOperation='lighter';
+        for(let f=0;f<3;f++){ const ph=gameT*7+f*2.1; const fh=5+Math.sin(ph)*2.5;
+          const g2=ctx.createRadialGradient(bx+T/2+(f-1)*3,fy-4,0, bx+T/2+(f-1)*3,fy-4,fh+6);
+          g2.addColorStop(0,'rgba(255,190,80,0.8)'); g2.addColorStop(0.5,'rgba(233,120,40,0.35)'); g2.addColorStop(1,'rgba(0,0,0,0)');
+          ctx.fillStyle=g2; ctx.beginPath(); ctx.arc(bx+T/2+(f-1)*3,fy-4,fh+6,0,TAU); ctx.fill(); }
+        ctx.restore();
+        ctx.fillStyle='#3a2c18'; ctx.fillRect(bx+6,fy-4,4,3); ctx.fillRect(bx+12,fy-3,5,2); }
+      break; }
+    case 'plant': ctx.fillStyle=sh('#7a4a2a'); ctx.fillRect(bx+7,fy-7,T-14,7);
+      ctx.strokeStyle=sh(PAL.verd); ctx.lineWidth=1.6;
+      for(let l=0;l<5;l++){ const la=(l-2)*0.5; ctx.beginPath(); ctx.moveTo(bx+T/2,fy-7);
+        ctx.quadraticCurveTo(bx+T/2+la*6, fy-14, bx+T/2+la*9, fy-18+Math.abs(la)*3); ctx.stroke(); }
+      ctx.lineWidth=1; break;
+    case 'sacks': ctx.fillStyle=sh('#6a5a3a'); ctx.beginPath(); ctx.ellipse(bx+7,fy-5,6,5.5,0,0,TAU); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(bx+16,fy-5,6,5.5,0,0,TAU); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(bx+11,fy-12,6,5.5,0,0,TAU); ctx.fill();
+      ctx.strokeStyle=sh('#3f3320');
+      ctx.beginPath(); ctx.moveTo(bx+7,fy-10); ctx.lineTo(bx+7,fy-8); ctx.moveTo(bx+11,fy-17); ctx.lineTo(bx+11,fy-15); ctx.stroke(); break;
+    case 'candleRack': { // the chandler's stock — dipped tapers hanging in pairs
+      ctx.fillStyle=sh('#3a2c18'); ctx.fillRect(bx+2,fy-34,3,34); ctx.fillRect(bx+T-5,fy-34,3,34);
+      for(let row=0;row<3;row++){ const ry=fy-30+row*9;
+        ctx.fillRect(bx+2,ry,T-4,2);
+        for(let cnd=0;cnd<4;cnd++){ const cx2=bx+5+cnd*4.4;
+          ctx.fillStyle=sh('#e8ddb8'); ctx.fillRect(cx2,ry+2,2,6);
+          ctx.fillStyle=sh('#3a2c18'); }
+      }
+      if(vis){ ctx.fillStyle='rgba(233,162,59,0.8)'; ctx.beginPath(); ctx.arc(bx+T/2,fy-33,1.6,0,TAU); ctx.fill(); }
+      break; }
+    case 'waxVat': { // simmering wax cauldron
+      ctx.fillStyle=sh('#33405e'); ctx.beginPath(); ctx.ellipse(bx+T/2,fy-7,9,7,0,0,TAU); ctx.fill();
+      ctx.fillStyle=sh('#e8ddb8'); ctx.beginPath(); ctx.ellipse(bx+T/2,fy-12,7,2.2,0,0,TAU); ctx.fill();
+      ctx.strokeStyle=sh('#1a2130'); ctx.beginPath(); ctx.ellipse(bx+T/2,fy-7,9,7,0,0,TAU); ctx.stroke();
+      if(vis){ const wb=Math.sin(gameT*3+bx); ctx.fillStyle='rgba(232,221,184,0.5)';
+        ctx.beginPath(); ctx.arc(bx+T/2+wb*3,fy-12,1.2,0,TAU); ctx.fill(); }
+      break; }
+    case 'scale': { // the counting-house balance
+      ctx.fillStyle=sh('#caa24a'); ctx.fillRect(bx+T/2-1,fy-18,2,18);
+      const tilt=Math.sin(gameT*0.8)*2;
+      ctx.strokeStyle=sh('#caa24a'); ctx.lineWidth=1.6; ctx.beginPath();
+      ctx.moveTo(bx+3,fy-14+tilt); ctx.lineTo(bx+T-3,fy-14-tilt); ctx.stroke(); ctx.lineWidth=1;
+      for(const [px2,off] of [[bx+3,tilt],[bx+T-3,-tilt]]){
+        ctx.strokeStyle=sh('#8a7434'); ctx.beginPath(); ctx.moveTo(px2,fy-14+off); ctx.lineTo(px2,fy-9+off); ctx.stroke();
+        ctx.fillStyle=sh('#caa24a'); ctx.beginPath(); ctx.ellipse(px2,fy-8+off,4,1.8,0,0,TAU); ctx.fill(); }
+      break; }
+    case 'chandelier': { // hangs from the ceiling of its cell
+      const cy2=fy-T; ctx.strokeStyle=sh('#caa24a'); ctx.beginPath(); ctx.moveTo(bx+T/2,cy2); ctx.lineTo(bx+T/2,cy2+8); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(bx+4,cy2+12); ctx.quadraticCurveTo(bx+T/2,cy2+18,bx+T-4,cy2+12); ctx.stroke();
+      for(const cx2 of [bx+4,bx+T/2,bx+T-4]){ const yy=cx2===bx+T/2?cy2+16:cy2+12;
+        ctx.fillStyle=sh('#e8ddb8'); ctx.fillRect(cx2-1,yy-4,2,4);
+        if(vis){ ctx.fillStyle=`rgba(255,220,140,${0.7+0.3*Math.sin(gameT*9+cx2)})`; ctx.beginPath(); ctx.arc(cx2,yy-5,1.5,0,TAU); ctx.fill(); } }
+      break; }
+    case 'shelfJars': { // wall shelf of jars in its cell
+      const sy2=fy-T*0.45;
+      ctx.fillStyle=sh('#3a2c18'); ctx.fillRect(bx+2,sy2,T-4,2);
+      const jc=[PAL.verd,PAL.sodium,'#8a5a8a','#5a8aa0'];
+      for(let j=0;j<4;j++){ ctx.fillStyle=sh(jc[j]); ctx.fillRect(bx+4+j*4.6,sy2-6,3.4,6);
+        ctx.fillStyle=sh('#1a1410'); ctx.fillRect(bx+4+j*4.6,sy2-7.4,3.4,1.6); }
+      break; }
     case 'painting': { const y=fy-T+4; ctx.fillStyle=sh('#6a5238'); ctx.fillRect(bx+4,y,T-8,T-8);
       ctx.fillStyle=sh(PAL.draft); ctx.fillRect(bx+6,y+2,T-12,T-12);
       ctx.fillStyle=sh(PAL.verd); ctx.fillRect(bx+7,y+7,T-14,3); ctx.fillStyle=sh(PAL.sodium); ctx.beginPath(); ctx.arc(bx+T/2,y+5,2,0,TAU); ctx.fill(); break; }

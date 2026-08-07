@@ -21,8 +21,7 @@
     -webkit-tap-highlight-color: transparent;
   }
   canvas {
-    image-rendering: pixelated;
-    image-rendering: crisp-edges;
+    image-rendering: auto;
     max-width: 100vw;
     max-height: 100vh;
     max-height: 100dvh;
@@ -137,6 +136,12 @@ let lamps, loot, guards, lightmap, exitPx, decor, hideCells;
 let level=0;
 const LEVEL_NAMES = ['The Chandler\u2019s Shop', 'The Counting House'];
 const LEVELS = LEVEL_NAMES.length;
+const SAVE_KEY = 'spoil.progress.v1';
+const VERSION = '2026.08.07-0358';
+let prog = { xp:0, best:0, level:0 };
+function save(){ try{ if(typeof localStorage!=='undefined') localStorage.setItem(SAVE_KEY, JSON.stringify(prog)); }catch(e){} }
+function load(){ try{ if(typeof localStorage!=='undefined'){ const r=localStorage.getItem(SAVE_KEY);
+  if(r){ const d=JSON.parse(r); if(d&&typeof d==='object'){ prog.xp=d.xp|0; prog.best=d.best|0; prog.level=clamp(d.level|0,0,LEVELS-1); } } } }catch(e){} }
 let exploredSet, visSet;
 let player, mode, msgState, floaters, rings, shake, stats, cam, gameT;
 let tutMsg={text:'',t:0}, tutSeen=new Set();
@@ -174,7 +179,7 @@ function genLevel(){
 
 function buildHideCells(){
   hideCells = new Set();
-  const hideable = { bookcase:1, cabinet:1, barrel:1, crate:1, curtain:1 };
+  const hideable = { bookcase:1, cabinet:1, barrel:1, crate:1 };
   for(const d of (decor||[])) if(hideable[d.t] && !d.wall) hideCells.add(idx(d.x, d.y-1));
 }
 
@@ -302,8 +307,6 @@ function genEarth(groundY, bx0, bx1){
   // grate shaft from the street down into the sewer (x=5), with a rope already hanging into the void
   for(let y=groundY+1; y<=sewerY-1; y++){ grid[idx(5,y)]='S'; mat[idx(5,y)]='S'; ropes.add(idx(5,y)); }
   grid[idx(5,sewerY)]='='; floorType[idx(5,sewerY)]='street'; // landing at the shaft foot
-  grid[idx(5,groundY)] = 'G_';   // grate on the street (special tile) -> we treat via specialGrate
-  window.__grate = idx(5,groundY);
   // make the grate a walkable floor you can open/descend
   grid[idx(5,groundY)] = '=';
   floorType[idx(5,groundY)] = 'grate';
@@ -346,9 +349,6 @@ function opaque(i){
 function climbable(i){
   const k = grid[i];
   return k==='H' || (k==='r') || ropes.has(i) || k==='S';
-}
-function passableForFall(i){           // can a body occupy this cell (not solid)?
-  return !solid(i);
 }
 
 // tile LOS
@@ -465,14 +465,29 @@ function resetRun(){
   player = {
     x: 3*T+T/2, y: (18-1)*T+T/2,     // on the street, left end (groundY-1 = 17)
     vx:0, vy:0, onGround:true, climbing:false, tier:2, sneak:false, dir:1, hidden:false,
-    stamina:100, spoil:0, picks:3, probes:10, timbers:6, ropesLeft:3,
+    picks:3,
     lootVal:0, stepT:0, breathT:0, lowT:0, coyote:0, walkPhase:0, prevH:TIERS[2].h,
   };
   exploredSet=new Set(); visSet=new Set();
   rings=[]; floaters=[]; shake=0; gameT=0;
   msgState={text:'',t:0}; lock=null; action=null; tutMsg={text:'',t:0}; levelIntroT=0;
   cam={x:player.x, y:player.y};
-  stats={ ghost:true, snapped:false, glass:false, collapsed:false, alerted:false, dug:0, picked:0, cause:'' };
+  stats={ ghost:true, snapped:false, alerted:false, dug:0, picked:0, cause:'', payout:null, campaignDone:false };
+}
+function settleHeist(){
+  let mult=1; const rows=[['take', `${player.lootVal} coin`]];
+  if(stats.ghost){ mult*=1.5; rows.push(['GHOST \u2014 no guard ever stirred','\u00d71.5']); }
+  if(loot.every(l=>l.taken)){ mult*=1.2; rows.push(['FULL HAUL \u2014 nothing left behind','\u00d71.2']); }
+  const clean=!stats.snapped && !stats.alerted;
+  if(clean){ mult*=1.25; rows.push(['CLEAN \u2014 no alarm, no broken picks','\u00d71.25']); }
+  else { const ev=[]; if(stats.alerted) ev.push('the alarm was raised'); if(stats.snapped) ev.push('a snapped pick');
+    rows.push([`evidence: ${ev.join(', ')}`,'\u2014']); }
+  const xp=Math.round((player.lootVal/10)*mult);
+  stats.payout={ rows, xp };
+  stats.campaignDone=(level===LEVELS-1);
+  prog.xp+=xp; if(player.lootVal>prog.best) prog.best=player.lootVal;
+  prog.level=(level+1)%LEVELS;
+  save();
 }
 function msg(t){ msgState={text:t,t:4}; }
 function tut(id,text){ if(tutSeen.has(id)) return; tutSeen.add(id); tutMsg={text,t:6}; }
@@ -593,7 +608,7 @@ function playerUpdate(dt){
     }
   }
   // ---- escape ----
-  if(grid[pcell()]==='X'){ mode='escaped'; }
+  if(grid[pcell()]==='X' && mode==='play'){ mode='escaped'; settleHeist(); }
 
   // ---- hidden: sneaking into a bookcase/cabinet/barrel breaks line of sight ----
   player.hidden = player.sneak && !player.climbing && hideCells && hideCells.has(pcell());
@@ -624,7 +639,8 @@ function moveAxis(dx,dy){
 // probe: is there solid ground within 2px under the feet?
 // a ladder/rope cell that sits level with a floor slab acts as a landing you can walk across
 function atFloorLevel(i){ const x=i%W, y=(i/W)|0;
-  return (inb(x-1,y)&&grid[idx(x-1,y)]==='=') || (inb(x+1,y)&&grid[idx(x+1,y)]==='='); }
+  const fl=c=>c==='='||c==='w';
+  return (inb(x-1,y)&&fl(grid[idx(x-1,y)])) || (inb(x+1,y)&&fl(grid[idx(x+1,y)])); }
 function groundProbe(){
   const h=TIERS[player.tier].h, r=7;
   for(const ox of [-r, r]){
@@ -642,7 +658,6 @@ function groundProbe(){
 // ============================================================
 function startAction(a){ action=a; action.t=0; }
 function cancelAction(){ action=null; }
-function spoilCap(){ return 6; }
 
 function tryInteract(){
   const here=pcell(), fi=faceCell(), bi=belowCell();
@@ -722,37 +737,6 @@ function completeAction(){
   }
 }
 
-// ---------- collapse ----------
-function tunnelRegion(startI){
-  const seen=new Set([startI]); const q=[startI]; const cells=[]; let weight=0;
-  while(q.length){
-    const i=q.pop(); if(!dug[i]||shored[i]||grid[i]==='S') continue;
-    cells.push(i); weight+=MAT[mat[i]]?MAT[mat[i]].wt:0;
-    const x=i%W,y=(i/W)|0;
-    for(const [dx,dy] of DIR4){ const nx=x+dx,ny=y+dy; if(!inb(nx,ny)) continue; const ni=idx(nx,ny);
-      if(seen.has(ni)) continue; seen.add(ni);
-      if(dug[ni]&&!shored[ni]&&grid[ni]!=='S') q.push(ni); }
-  }
-  return { cells, weight };
-}
-function collapseCheck(newCell){
-  const r=tunnelRegion(newCell);
-  if(r.weight>3){ doCollapse(r); return; }
-  if(r.weight===3) msg('The tunnel groans. Shore it (T) before digging on.');
-  else if(r.weight===2) msg(`Unshored span ${r.weight}/3.`);
-}
-function doCollapse(region){
-  let sx=0,sy=0; for(const i of region.cells){ sx+=i%W; sy+=(i/W)|0; }
-  sx=Math.round(sx/region.cells.length); sy=Math.round(sy/region.cells.length);
-  const pc=pcell(); let buried=false;
-  for(const i of region.cells){ if((MAT[mat[i]]?MAT[mat[i]].wt:0)===0) continue;
-    dug[i]=false; shored[i]=false; grid[i]='E'; mat[i]='U'; probed[i]=true;
-    if(i===pc) buried=true; }
-  stats.collapsed=true; shake=1.2; sfx.collapse(); emitSound(sx,sy,30);
-  if(buried){ stats.cause='The tunnel came down on you.'; mode='caught'; }
-  else msg('Progressive collapse. Half the district heard that.');
-}
-
 // ============================================================
 // Lockpicking (unchanged feel)
 // ============================================================
@@ -787,7 +771,6 @@ function lockUpdate(dt){
 // ============================================================
 // Guards (side-view lane patrol)
 // ============================================================
-function guardV(){ return player.tier===undefined?0:1; }
 function guardCanSee(g){
   if(mode!=='play') return false;
   if(player.hidden) return false;
@@ -856,7 +839,7 @@ function guardUpdate(g,dt){
         else { g.face=sign(tx-g.x)||g.face; }
       }
       g.sweepT=(g.sweepT||0)+dt;
-      if(!see && g.sweepT>7){ g.floor=clamp(g.floor+9,0,60); g.aware*=1.1; g.susp=g.floor; g.shouted=false; g.state='patrol'; g.sweepT=0; floater(g.x,g.y-20,'Hm.',PAL.draft); }
+      if(!see && g.sweepT>7){ g.floor=clamp(g.floor+9,0,60); g.aware=Math.min(2.2,g.aware*1.1); g.susp=g.floor; g.shouted=false; g.state='patrol'; g.sweepT=0; floater(g.x,g.y-20,'Hm.',PAL.draft); }
       if(g.state==='alert' && Math.hypot(player.x-g.x,player.y-g.y)<18 && Math.abs(player.y-g.y)<T){ stats.cause='A hand closes on your collar.'; mode='caught'; }
       break;
     }
@@ -961,9 +944,9 @@ function belowGround(){ return (player.y/T)|0 > 18; }
 // Input
 // ============================================================
 const keys={};
-const mouse={ x:VW/2, y:VH/2 };
+const mouse={ x:CW/2, y:CH/2 };
 const isTouchDevice = (typeof navigator!=='undefined'&&navigator.maxTouchPoints>0)||(typeof window!=='undefined'&&'ontouchstart' in window);
-const touch={ used:false, stickId:null, nub:[STICK.x,STICK.y], vec:[0,0], mag:0, holds:new Map(), pickId:null, tension:false };
+const touch={ used:false, stickId:null, nub:[STICK.x,STICK.y], vec:[0,0], holds:new Map(), pickId:null, tension:false };
 let touchButtons=[];
 
 function onKeyDown(e){
@@ -1010,7 +993,7 @@ function onTouchStart(e){ e.preventDefault(); touch.used=true; ac();
   for(const t of e.changedTouches){ const [cx,cy]=canvasXY(t); let hit=null;
     for(const b of touchButtons) if(Math.hypot(cx-b.x,cy-b.y)<=b.r+10){ hit=b; break; }
     if(hit){ if(hit.k==='tension'){ touch.tension=true; touch.holds.set(t.identifier,'tension'); }
-      else { touch.holds.set(t.identifier,hit.k); keys[hit.k]=true; handlePress(hit.k); } }
+      else { touch.holds.set(t.identifier,hit.k); if(hit.k!=='sneak') keys[hit.k]=true; handlePress(hit.k); } }
     else if(lock){ touch.pickId=t.identifier; mouse.x=cx; }
     else if(cx < CW*0.5 && touch.stickId==null){ touch.stickId=t.identifier; stickSet(cx,cy); }
   }
@@ -1029,9 +1012,11 @@ function onTouchEnd(e){ e.preventDefault(); for(const t of e.changedTouches){
 // ============================================================
 // Render
 // ============================================================
-let canvas, ctx;
+let canvas, ctx, DPR=1;
+function uiTf(){ ctx.setTransform(DPR,0,0,DPR,0,0); }
+function worldTf(shx,shy){ const s=SCALE*DPR; ctx.setTransform(s,0,0,s, -(cam.x+shx)*s, -(cam.y+shy)*s); }
 function render(){
-  ctx.setTransform(1,0,0,1,0,0);
+  uiTf();
   ctx.fillStyle=PAL.void; ctx.fillRect(0,0,CW,CH);
 
   // camera follows player, clamped; zoomed 2x
@@ -1041,7 +1026,7 @@ function render(){
 
   ctx.save();
   ctx.beginPath(); ctx.rect(0,0,CW,CH-HUD_H); ctx.clip();
-  ctx.setTransform(SCALE,0,0,SCALE,-(cam.x+shx)*SCALE,-(cam.y+shy)*SCALE);
+  worldTf(shx,shy);
 
   const x0=Math.max(0,(cam.x/T)|0), y0=Math.max(0,(cam.y/T)|0);
   const x1=Math.min(W-1,((cam.x+VW)/T)|0), y1=Math.min(H-1,((cam.y+VH)/T)|0);
@@ -1189,16 +1174,24 @@ function drawLamps(){
 }
 
 function drawVignette(){
-  ctx.setTransform(1,0,0,1,0,0);
+  uiTf();
   const gh=CH-HUD_H;
   const vg=ctx.createRadialGradient(CW/2,gh*0.5, gh*0.30, CW/2,gh*0.5, gh*0.85);
   vg.addColorStop(0,'rgba(0,0,0,0)'); vg.addColorStop(1,'rgba(0,0,0,0.34)');
   ctx.fillStyle=vg; ctx.fillRect(0,0,CW,gh);
+  // danger flash — edges pulse red while a guard is alert (or amber while investigating)
+  let heat=0, col='184,67,58';
+  if(mode==='play'){ for(const g of guards){ if(g.state==='alert'){ heat=Math.max(heat,1); }
+    else if(g.state==='investigate'){ heat=Math.max(heat,0.5); col=heat>=1?col:'233,162,59'; } } }
+  if(heat>0){ const pulse=(0.5+0.5*Math.sin(gameT*(heat>=1?9:4)))*heat;
+    const rg=ctx.createRadialGradient(CW/2,gh*0.5, gh*0.45, CW/2,gh*0.5, gh*0.95);
+    rg.addColorStop(0,'rgba(0,0,0,0)'); rg.addColorStop(1,`rgba(${col},${0.30*pulse})`);
+    ctx.fillStyle=rg; ctx.fillRect(0,0,CW,gh); }
 }
 
 function drawObjective(){
   if(mode!=='play') return;
-  ctx.setTransform(1,0,0,1,0,0);
+  uiTf();
   const got = loot.some(l=>l.type==='box'&&l.taken);
   ctx.textAlign='center'; ctx.textBaseline='alphabetic';
   ctx.font='11px monospace'; ctx.fillStyle=got?'rgba(78,156,134,0.95)':'rgba(140,150,165,0.9)';
@@ -1208,7 +1201,7 @@ function drawObjective(){
 
 function drawLevelIntro(){
   if(levelIntroT<=0 || mode!=='play') return;
-  ctx.setTransform(1,0,0,1,0,0);
+  uiTf();
   const gh=CH-HUD_H, a=clamp(levelIntroT/0.6,0,1);
   ctx.globalAlpha=a; ctx.textAlign='center'; ctx.textBaseline='middle';
   ctx.fillStyle=PAL.sodium; ctx.font='bold 13px monospace';
@@ -1222,7 +1215,7 @@ function drawLevelIntro(){
 
 function drawTutorial(){
   if(mode!=='play' || tutMsg.t<=0) return;
-  ctx.setTransform(1,0,0,1,0,0);
+  uiTf();
   const a=clamp(tutMsg.t,0,1);
   ctx.font='13px monospace'; ctx.textAlign='center'; ctx.textBaseline='middle';
   const tw=ctx.measureText(tutMsg.text).width|0;
@@ -1477,8 +1470,7 @@ function drawPlayer(){ const h=TIERS[player.tier].h; const lit=lightAtPx(player.
   if(action){ const topY = feetY - h - 8;
     ctx.strokeStyle=PAL.sodium; ctx.lineWidth=2; ctx.beginPath();
     ctx.arc(player.x, topY, 7, -Math.PI/2, -Math.PI/2 + TAU*(action.t/action.total)); ctx.stroke(); ctx.lineWidth=1; }
-  // spoil load pips at the feet
-  for(let s=0;s<player.spoil;s++){ ctx.fillStyle=shade('#6a4a30',0.9); ctx.fillRect(player.x-6+s*2.4, feetY+1, 1.8,1.8); } }
+}
 
 function drawFloaters(){ ctx.textAlign='center'; ctx.font='7px monospace';
   for(const f of floaters){ ctx.globalAlpha=clamp(f.t,0,1); ctx.fillStyle=f.col; ctx.fillText(f.text,f.x,f.y); } ctx.globalAlpha=1; }
@@ -1487,7 +1479,7 @@ function drawFloaters(){ ctx.textAlign='center'; ctx.font='7px monospace';
 // HUD + overlays
 // ============================================================
 function drawHUD(){
-  ctx.setTransform(1,0,0,1,0,0);
+  uiTf();
   const y0=CH-HUD_H;
   ctx.fillStyle=PAL.void; ctx.fillRect(0,y0,CW,HUD_H);
   ctx.strokeStyle=PAL.draft; ctx.beginPath(); ctx.moveTo(0,y0+0.5); ctx.lineTo(CW,y0+0.5); ctx.stroke();
@@ -1562,7 +1554,7 @@ function roundRect(x,y,w,h,r){ ctx.beginPath();
   ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
 
 function drawLock(){
-  ctx.setTransform(1,0,0,1,0,0);
+  uiTf();
   const gh=CH-HUD_H;
   // dim the scene behind
   ctx.fillStyle='rgba(6,8,12,0.55)'; ctx.fillRect(0,0,CW,gh);
@@ -1658,7 +1650,7 @@ function drawLock(){
 
 function drawTouchUI(){
   if(!touch.used) return;
-  ctx.setTransform(1,0,0,1,0,0);
+  uiTf();
   // fixed thumbstick (only during play, not while picking a lock)
   if(mode==='play' && !lock){
     const active=touch.stickId!=null;
@@ -1691,7 +1683,7 @@ function drawTouchUI(){
 }
 
 function drawTitle(){
-  ctx.setTransform(1,0,0,1,0,0);
+  uiTf();
   const gh=CH-HUD_H;
   // opaque backdrop (no scene bleed) with a soft night gradient
   const bg=ctx.createLinearGradient(0,0,0,CH);
@@ -1713,6 +1705,8 @@ function drawTitle(){
   ctx.fillText('a house in cross-section \u2014 rob it from any angle', CW/2, 146);
   ctx.fillStyle='rgba(233,162,59,0.85)'; ctx.font='12px monospace';
   ctx.fillText('start small: petty theft tonight, bigger jobs to come', CW/2, 162);
+  if(prog.xp>0 || prog.level>0){ ctx.fillStyle=PAL.verd; ctx.font='12px monospace';
+    ctx.fillText(`purse ${prog.xp} XP  \u00b7  resuming at LEVEL ${level+1}: ${LEVEL_NAMES[level]}`, CW/2, 196); }
 
   // one centered line of essential controls, then let the game teach the rest
   ctx.font='12px monospace'; ctx.fillStyle='rgba(120,133,150,0.9)';
@@ -1723,6 +1717,8 @@ function drawTitle(){
   ctx.globalAlpha=blink; ctx.fillStyle=PAL.sodium; ctx.font='16px monospace';
   ctx.fillText(isTouchDevice?'\u2014 tap to begin the night \u2014':'\u2014 press ENTER to begin the night \u2014', CW/2, gh-40);
   ctx.globalAlpha=1;
+  ctx.textAlign='right'; ctx.fillStyle='rgba(120,133,150,0.5)'; ctx.font='10px monospace';
+  ctx.fillText('build '+VERSION, CW-14, CH-12); ctx.textAlign='left';
 }
 function drawTitleHouse(cx,cy){
   // stylized 3-storey cutaway with a lit window and a figure — sets the tone
@@ -1750,24 +1746,26 @@ function drawTitleHouse(cx,cy){
 }
 
 function drawEnd(escaped){
-  ctx.setTransform(1,0,0,1,0,0);
-  ctx.fillStyle=PAL.void; ctx.globalAlpha=0.86; ctx.fillRect(0,0,CW,CH); ctx.globalAlpha=1; ctx.textAlign='center';
-  if(!escaped){ ctx.fillStyle=PAL.oxide; ctx.font='bold 40px monospace'; ctx.fillText('TAKEN',CW/2,220);
-    ctx.fillStyle=PAL.chalk; ctx.font='14px monospace'; ctx.fillText(stats.cause||'The night ends in irons.',CW/2,258);
-    ctx.fillStyle=PAL.draft; ctx.fillText(touch.used?'tap to run the job again':'press R to run the job again',CW/2,300); return; }
-  ctx.fillStyle=PAL.verd; ctx.font='bold 38px monospace'; ctx.fillText('THE FENCE',CW/2,150);
-  ctx.font='14px monospace'; let mult=1; const rows=[]; rows.push(['take',`${player.lootVal} coin`]);
-  if(stats.ghost){ mult*=1.5; rows.push(['GHOST — no guard ever stirred','×1.5']); }
-  rows.push(['BLOODLESS — no bodies','×1.3']); mult*=1.3;
-  const clean=!stats.snapped&&!stats.glass&&!stats.collapsed;
-  if(clean){ mult*=1.25; rows.push(['CLEAN — no evidence','×1.25']); }
-  else { const ev=[]; if(stats.snapped) ev.push('a snapped pick'); if(stats.glass) ev.push('broken glass'); if(stats.collapsed) ev.push('a caved tunnel');
-    rows.push([`evidence: ${ev.join(', ')}`,'—']); }
-  const xp=Math.round((player.lootVal/10)*mult);
-  let y=204; ctx.fillStyle=PAL.chalk; for(const [a,b] of rows){ ctx.textAlign='left'; ctx.fillText(a,300,y); ctx.textAlign='right'; ctx.fillText(b,660,y); y+=26; }
-  ctx.textAlign='center'; ctx.fillStyle=PAL.sodium; ctx.font='bold 20px monospace'; ctx.fillText(`${xp} XP`,CW/2,y+14);
-  ctx.fillStyle=PAL.draft; ctx.font='12px monospace'; ctx.fillText(`cells dug ${stats.dug} · locks picked ${stats.picked}`,CW/2,y+40);
-  ctx.fillText(touch.used?'tap for another night':'press R for another night',CW/2,y+70);
+  uiTf();
+  ctx.fillStyle=PAL.void; ctx.globalAlpha=0.9; ctx.fillRect(0,0,CW,CH); ctx.globalAlpha=1; ctx.textAlign='center'; ctx.textBaseline='alphabetic';
+  if(!escaped){ ctx.fillStyle=PAL.oxide; ctx.font='bold 40px monospace'; ctx.fillText('TAKEN',CW/2,210);
+    ctx.fillStyle=PAL.chalk; ctx.font='14px monospace'; ctx.fillText(stats.cause||'The night ends in irons.',CW/2,248);
+    ctx.fillStyle=PAL.draft; ctx.font='13px monospace'; ctx.fillText(touch.used?'tap to run the job again':'press R to run the job again',CW/2,290); return; }
+  const p=stats.payout||{rows:[['take',`${player.lootVal} coin`]],xp:0};
+  ctx.fillStyle=PAL.verd; ctx.font='bold 36px monospace'; ctx.fillText('THE FENCE',CW/2,120);
+  ctx.font='13px monospace'; ctx.fillStyle=PAL.draft;
+  ctx.fillText(`${LEVEL_NAMES[level]} \u2014 cleared`, CW/2, 144);
+  let y=182; ctx.font='15px monospace';
+  for(const [a,b] of p.rows){ ctx.textAlign='left'; ctx.fillStyle= b[0]==='\u00d7'?PAL.verd:PAL.chalk; ctx.fillText(a,300,y);
+    ctx.textAlign='right'; ctx.fillStyle=PAL.chalk; ctx.fillText(b,CW-300,y); y+=28; }
+  ctx.textAlign='center'; ctx.fillStyle=PAL.sodium; ctx.font='bold 22px monospace'; ctx.fillText(`+${p.xp} XP`,CW/2,y+16);
+  ctx.fillStyle=PAL.draft; ctx.font='12px monospace';
+  ctx.fillText(`purse ${prog.xp} XP  \u00b7  best haul ${prog.best} coin  \u00b7  locks picked ${stats.picked}`,CW/2,y+42);
+  if(stats.campaignDone){ ctx.fillStyle=PAL.sodium; ctx.font='13px monospace';
+    ctx.fillText('You\u2019ve cleared every job for now \u2014 the fence has bigger work coming.',CW/2,y+66);
+    ctx.fillStyle=PAL.draft; ctx.fillText(touch.used?'tap to start over':'press R to start over',CW/2,y+90); }
+  else { ctx.fillStyle=PAL.verd; ctx.font='13px monospace';
+    ctx.fillText(touch.used?`tap for the next job \u2014 ${LEVEL_NAMES[(level+1)%LEVELS]}`:`press R for the next job \u2014 ${LEVEL_NAMES[(level+1)%LEVELS]}`,CW/2,y+70); }
 }
 
 // ============================================================
@@ -1776,7 +1774,10 @@ function drawEnd(escaped){
 function boot(){
   canvas = document.getElementById('g');
   ctx = canvas.getContext('2d');
+  DPR = Math.max(1, Math.min(3, (typeof window!=='undefined' && window.devicePixelRatio) || 1));
+  canvas.width = Math.round(CW*DPR); canvas.height = Math.round(CH*DPR);   // crisp vector lines on retina/iPhone
   touch.used = isTouchDevice;            // show the D-pad right away on phones/tablets
+  load(); level = prog.level;            // resume where the player left off
   resetRun(); mode='title';
   document.addEventListener('keydown', onKeyDown);
   document.addEventListener('keyup', onKeyUp);
@@ -1792,7 +1793,7 @@ function boot(){
   // (stored in canvas pixels) becomes stale and movement directions can go haywire.
   // Drop all live input so the player starts clean in the new layout.
   const clearInput=()=>{ for(const k in keys) keys[k]=false;
-    touch.stickId=null; touch.vec=[0,0]; touch.mag=0; touch.nub=[STICK.x,STICK.y]; touch.tension=false; touch.pickId=null; touch.holds.clear();
+    touch.stickId=null; touch.vec=[0,0]; touch.nub=[STICK.x,STICK.y]; touch.tension=false; touch.pickId=null; touch.holds.clear();
     if(player) player.vx=0; };
   if(typeof window!=='undefined' && window.addEventListener){
     window.addEventListener('resize', clearInput);

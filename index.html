@@ -110,7 +110,7 @@ const isEarth = k => MAT[k] !== undefined;
 // ---------- movement tiers (horizontal) ----------
 // loudness base per footfall; stance affects how visible you are; height = collision box.
 const TIERS = [
-  { name:'SNEAK', spd:32,  base:1, int:0.60, stance:0.60, h:14 },
+  { name:'SNEAK', spd:42,  base:1, int:0.60, stance:0.60, h:14 },
   { name:'WALK',  spd:66,  base:6, int:0.46, stance:1.00, h:20 },
   { name:'RUN',   spd:150, base:9, int:0.30, stance:1.15, h:20 },  // outruns any guard — but the whole street hears it
 ];
@@ -141,7 +141,7 @@ const LEVEL_INFO = [
 const LEVEL_NAMES = LEVEL_INFO.map(l=>l.name);
 const LEVELS = LEVEL_INFO.length;
 const SAVE_KEY = 'spoil.progress.v1';
-const VERSION = '2026.09.08-1750';
+const VERSION = '2026.09.08-2318';
 let prog = { xp:0, best:0, level:0 };
 function save(){ try{ if(typeof localStorage!=='undefined') localStorage.setItem(SAVE_KEY, JSON.stringify(prog)); }catch(e){} }
 function load(){ try{ if(typeof localStorage!=='undefined'){ const r=localStorage.getItem(SAVE_KEY);
@@ -209,7 +209,7 @@ function genShop(){
            {x:33,y:groundY-1,val:500,type:'box',taken:false} ];
   lamps = [ {x:6,y:groundY-1.5,r:7}, {x:W-6.5,y:groundY-1.5,r:7.5}, {x:20,y:groundY-1.5,r:6}, {x:32,y:groundY-1.5,r:5} ];
   // one slow, none-too-sharp watchman in the front room
-  const g=mkGuard('watchman', [[14,groundY-1],[26,groundY-1]], true, groundY-1); g.aware=0.7; guards=[g];
+  const g=mkGuard('watchman', [[14,groundY-1],[26,groundY-1]], true, groundY-1, {speed:36, pause:2.4}); g.aware=0.7; guards=[g];
   camBottom=(groundY+1.6)*T;   // nothing underground here — frame the house, not black earth
   // solid ground — no tunnelling on the easy job
   for(let y=groundY+1;y<H-1;y++) for(let x=1;x<W-1;x++){ grid[idx(x,y)]='K'; mat[idx(x,y)]='K'; }
@@ -277,9 +277,9 @@ function genCountingHouse(){
     { x:35,   y:groundY-1.5, r:5.5 },
   ];
   guards = [
-    mkGuard('street', [[42,groundY-1],[W-7,groundY-1]], true, groundY-1),
-    mkGuard('ground', [[bx0+2,groundY-1],[30,groundY-1]], false, groundY-1),
-    mkGuard('mid',    [[bx0+2,s2-1],[bx1-2,s2-1]], true, s2-1),
+    mkGuard('street', [[42,groundY-1],[W-7,groundY-1]], true, groundY-1, {speed:44, pause:1.4}),
+    mkGuard('ground', [[bx0+2,groundY-1],[30,groundY-1]], false, groundY-1, {speed:42, pause:2.0}),
+    mkGuard('mid',    [[bx0+2,s2-1],[bx1-2,s2-1]], true, s2-1, {speed:44, pause:1.6}),
   ];
   genEarth(groundY, bx0, bx1);
   decor = [
@@ -340,9 +340,9 @@ function genEarth(groundY, bx0, bx1){
 function setMat(x,y,m){ if(inb(x,y)&&grid[idx(x,y)]!=='#'){ grid[idx(x,y)]='E'; mat[idx(x,y)]=m; if(m==='K') grid[idx(x,y)]='K'; } }
 function diggable(x,y){ return inb(x,y) && grid[idx(x,y)]==='E' && mat[idx(x,y)]!=='K'; }
 
-function mkGuard(id, wps, lantern, lane){
+function mkGuard(id, wps, lantern, lane, opts={}){
   const [sx,sy] = wps[0];
-  return { id, wps, wp:0, lantern, lane,
+  return { id, wps, wp:0, lantern, lane, speed:opts.speed||46, pause:opts.pause==null?1.6:opts.pause, holdWp:0,
     x:sx*T+T/2, y:sy*T+T/2, dir:1, face:1,
     susp:0, floor:0, aware:1, state:'patrol',
     lastKnown:null, lastSeen:-99, holdT:0, sweepT:0, shouted:false,
@@ -826,7 +826,7 @@ function guardUpdate(g,dt){
   if(see){
     const d=Math.hypot(player.x-g.x,player.y-g.y);
     const fall=clamp(1.15-d/210,0,1.15);
-    g.susp=clamp(g.susp+pVis()*fall*g.aware*dt*55,g.floor,100);
+    g.susp=clamp(g.susp+pVis()*fall*g.aware*dt*44,g.floor,100);
     g.lastKnown={x:player.x,y:player.y}; g.lastSeen=gameT;
     if(d<24) g.susp=100;
   } else if(gameT-g.lastSeen>1.6){ g.susp=Math.max(g.floor,g.susp-8*dt); }
@@ -843,16 +843,17 @@ function guardUpdate(g,dt){
     g.state='curious'; g.holdT=2.4; floater(g.x,g.y-20,'\u2026what was that?',PAL.chalk);
   }
 
-  const spd = g.state==='alert'?120 : g.state==='investigate'?92 : 54;
+  const spd = g.state==='alert'?120 : g.state==='investigate'?92 : g.speed;
 
   switch(g.state){
     case 'patrol': {
+      if(g.holdWp>0){ g.holdWp-=dt; guardStayOnLane(g); break; }        // lingering at the end of the beat, back to the room
       const wp=g.wps[g.wp];
       const tx=wp[0]*T+T/2;
       g.dir = sign(tx-g.x)||g.dir; g.face=g.dir;
-      if(guardBlocked(g,g.dir,spd,dt)){ g.wp=(g.wp+1)%g.wps.length; }   // wall or shut door: turn back
+      if(guardBlocked(g,g.dir,spd,dt)){ g.wp=(g.wp+1)%g.wps.length; g.holdWp=g.pause; }   // wall or shut door: pause, turn back
       else g.x += g.dir*spd*dt;
-      if(Math.abs(tx-g.x)<4){ g.wp=(g.wp+1)%g.wps.length; }
+      if(Math.abs(tx-g.x)<4){ g.wp=(g.wp+1)%g.wps.length; g.holdWp=g.pause; }
       guardStayOnLane(g);
       break;
     }

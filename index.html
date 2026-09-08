@@ -141,7 +141,7 @@ const LEVEL_INFO = [
 const LEVEL_NAMES = LEVEL_INFO.map(l=>l.name);
 const LEVELS = LEVEL_INFO.length;
 const SAVE_KEY = 'spoil.progress.v1';
-const VERSION = '2026.08.07-0502';
+const VERSION = '2026.09.08-1550';
 let prog = { xp:0, best:0, level:0 };
 function save(){ try{ if(typeof localStorage!=='undefined') localStorage.setItem(SAVE_KEY, JSON.stringify(prog)); }catch(e){} }
 function load(){ try{ if(typeof localStorage!=='undefined'){ const r=localStorage.getItem(SAVE_KEY);
@@ -251,7 +251,7 @@ function genCountingHouse(){
   const dspec = [
     [bx0, groundY-1, 1, 3, 'front door'],       // eased 4->3
     [24, groundY-1, 0, 0, 'counting-room door'],
-    [32, groundY-2, 1, 4, 'strongroom door'],   // eased 6->4
+    [32, groundY-1, 1, 4, 'strongroom door'],   // at body height
     [20, s2-1, 0, 0, 'landing door'],
     [28, s3-1, 0, 0, 'hall door'],
   ];
@@ -276,7 +276,7 @@ function genCountingHouse(){
     { x:35,   y:groundY-1.5, r:5.5 },
   ];
   guards = [
-    mkGuard('street', [[10,groundY-1],[W-8,groundY-1]], true, groundY-1),
+    mkGuard('street', [[42,groundY-1],[W-7,groundY-1]], true, groundY-1),
     mkGuard('ground', [[bx0+2,groundY-1],[30,groundY-1]], false, groundY-1),
     mkGuard('mid',    [[bx0+2,s2-1],[bx1-2,s2-1]], true, s2-1),
   ];
@@ -293,7 +293,7 @@ function genCountingHouse(){
     {x:26,y:s3,t:'curtain'}, {x:31,y:s3,t:'plant'}, {x:34,y:s3,t:'crate'},
     {x:16,y:14,t:'painting',wall:true}, {x:24,y:14,t:'painting',wall:true},
     // ground: the counting room
-    {x:14,y:groundY,t:'desk'}, {x:15,y:groundY,t:'scale'}, {x:16,y:groundY,t:'stool'},
+    {x:11,y:groundY,t:'armoire'}, {x:14,y:groundY,t:'desk'}, {x:15,y:groundY,t:'scale'}, {x:16,y:groundY,t:'crate'},
     {x:20,y:groundY,t:'clock'}, {x:22,y:groundY,t:'sacks'}, {x:26,y:groundY,t:'plant'},
     // the strongroom
     {x:34,y:groundY,t:'cabinet'}, {x:30,y:groundY,t:'sconceStand'},
@@ -324,7 +324,10 @@ function genEarth(groundY, bx0, bx1){
   // ---- the sewer: an open horizontal main a few tiles down, reached by a street grate ----
   const sewerY = groundY + 8;
   // sewerY-1 is open void (headroom), sewerY is a walkable channel floor
-  for(let x=6; x<=W-6; x++){ grid[idx(x,sewerY-1)]='S'; mat[idx(x,sewerY-1)]='S'; grid[idx(x,sewerY)]='='; floorType[idx(x,sewerY)]='street'; }
+  for(let x=6; x<=W-5; x++){ grid[idx(x,sewerY-1)]='S'; mat[idx(x,sewerY-1)]='S'; grid[idx(x,sewerY)]='='; floorType[idx(x,sewerY)]='street'; }
+  // the alley manhole: an iron ladder from the sewer up to the street by the exit (x=59)
+  for(let y=groundY+1; y<=sewerY-1; y++){ grid[idx(59,y)]='S'; mat[idx(59,y)]='S'; ropes.add(idx(59,y)); }
+  grid[idx(59,groundY)]='H'; floorType[idx(59,groundY)]='street';
   // grate shaft from the street down into the sewer (x=5), with a rope already hanging into the void
   for(let y=groundY+1; y<=sewerY-1; y++){ grid[idx(5,y)]='S'; mat[idx(5,y)]='S'; ropes.add(idx(5,y)); }
   grid[idx(5,sewerY)]='='; floorType[idx(5,sewerY)]='street'; // landing at the shaft foot
@@ -369,7 +372,7 @@ function opaque(i){
 }
 function climbable(i){
   const k = grid[i];
-  return k==='H' || (k==='r') || ropes.has(i) || k==='S';
+  return k==='H' || (k==='r') || ropes.has(i) || k==='S' || (k==='E' && dug[i]);   // shored tunnels have timber rungs
 }
 
 // tile LOS
@@ -588,7 +591,7 @@ function playerUpdate(dt){
     // (walk across ladders). Pushing down starts a climb instead, so this won't trap you.
     if(!player.climbing && player.vy>0 && !(keys['s']||keys['arrowdown']) && !(touch.stickId!=null&&touch.vec[1]>0.5)){
       const h=TIERS[player.tier].h, fx=(player.x/T)|0, ty=((player.y+h*0.5+2)/T)|0;
-      if(inb(fx,ty) && !solid(idx(fx,ty)) && climbable(idx(fx,ty)) && atFloorLevel(idx(fx,ty)) && preFeet <= ty*T+3){
+      if(inb(fx,ty) && !solid(idx(fx,ty)) && climbable(idx(fx,ty)) && atFloorLevel(idx(fx,ty)) && preFeet <= ty*T+T*0.8){   // also catches you stepping off a ladder top
         player.y = ty*T - 0.6 - h*0.5; player.vy = 0;   // rest just above the landing, like a floor
       }
     }
@@ -622,7 +625,7 @@ function playerUpdate(dt){
     }
   }
   // ---- escape ----
-  if(grid[pcell()]==='X' && mode==='play'){ mode='escaped'; settleHeist(); }
+  if(grid[pcell()]==='X' && playing()){ if(mode==='demo') demoEscaped(); else { mode='escaped'; settleHeist(); } }
 
   // ---- hidden: sneaking into a bookcase/cabinet/barrel breaks line of sight ----
   player.hidden = player.sneak && player.tier===0 && !player.climbing && hideCells && hideCells.has(pcell());
@@ -684,6 +687,8 @@ function tryInteract(){
     emitSound(5,18,3); msg('You slip through the grate into the sewer shaft.');
     return;
   }
+  const wantUp = keys['w']||keys['arrowup']||(touch.stickId!=null&&touch.vec[1]<-0.5);
+  const wantDown = keys['s']||keys['arrowdown']||(touch.stickId!=null&&touch.vec[1]>0.5);
   // dig UP through a weak board directly overhead (you're standing just beneath it)
   {
     const ax=(player.x/T)|0, ay=((player.y/T)|0)-1;   // the tile above the player's cell
@@ -691,6 +696,20 @@ function tryInteract(){
       startAction({ type:'digup', total:6, cell:idx(ax,ay), tick:0, label:'prying up the floorboards' });
       return;
     }
+    // dig UP through earth (hold UP + ACT) — the shoring gives you rungs to climb into it
+    if(wantUp && diggable(ax,ay) && !dug[idx(ax,ay)]){
+      const m=MAT[mat[idx(ax,ay)]];
+      startAction({ type:'dig', total:m.t, cell:idx(ax,ay), matk:mat[idx(ax,ay)], tick:0, label:`digging up through ${m.name}` });
+      return;
+    }
+  }
+  // pry up the boards you're standing on (hold DOWN + ACT), or dig straight down through earth
+  if(wantDown){
+    const dx=(player.x/T)|0, dy=((player.y+TIERS[player.tier].h*0.5+3)/T)|0;
+    if(inb(dx,dy) && grid[idx(dx,dy)]==='w'){
+      startAction({ type:'digup', total:6, cell:idx(dx,dy), tick:0, label:'prying up the floorboards' }); return; }
+    if(diggable(dx,dy) && !dug[idx(dx,dy)]){ const m=MAT[mat[idx(dx,dy)]];
+      startAction({ type:'dig', total:m.t, cell:idx(dx,dy), matk:mat[idx(dx,dy)], tick:0, label:`digging down through ${m.name}` }); return; }
   }
   if(fi<0) return;
 
@@ -711,7 +730,7 @@ function tryInteract(){
   // strongbox
   const bx=loot.find(l=>!l.taken&&l.type==='box'&&idx(l.x,l.y)===fi);
   if(bx){ startAction({ type:'lootbox', total:3, box:bx, label:'emptying the strongbox' }); return; }
-  const bx2=loot.find(l=>!l.taken&&l.type==='box'&&Math.hypot(player.x-(l.x*T+T/2),player.y-(l.y*T+T/2))<26);
+  const bx2=loot.find(l=>!l.taken&&l.type==='box'&&Math.hypot(player.x-(l.x*T+T/2),player.y-(l.y*T+T/2))<34);
   if(bx2){ startAction({ type:'lootbox', total:3, box:bx2, label:'emptying the strongbox' }); return; }
 
   // dig into earth we're facing (horizontal tunneling) or straight down
@@ -783,7 +802,7 @@ function lockUpdate(dt){
 // Guards (side-view lane patrol)
 // ============================================================
 function guardCanSee(g){
-  if(mode!=='play') return false;
+  if(!playing()) return false;
   if(player.hidden) return false;
   const dx=player.x-g.x, dy=player.y-g.y;
   const d=Math.hypot(dx,dy); if(d>210) return false;
@@ -830,7 +849,8 @@ function guardUpdate(g,dt){
       const wp=g.wps[g.wp];
       const tx=wp[0]*T+T/2;
       g.dir = sign(tx-g.x)||g.dir; g.face=g.dir;
-      g.x += g.dir*spd*dt;
+      if(guardBlocked(g,g.dir,spd,dt)){ g.wp=(g.wp+1)%g.wps.length; }   // wall or shut door: turn back
+      else g.x += g.dir*spd*dt;
       if(Math.abs(tx-g.x)<4){ g.wp=(g.wp+1)%g.wps.length; }
       guardStayOnLane(g);
       break;
@@ -846,17 +866,20 @@ function guardUpdate(g,dt){
         // change lanes toward target if on a different storey and a ladder is reachable
         guardVerticalChase(g, tgt, spd, dt);
         const tx=tgt.x;
-        if(Math.abs(tx-g.x)>6 && Math.abs(tgt.y-g.y)<T){ g.dir=sign(tx-g.x)||g.dir; g.face=g.dir; g.x+=g.dir*spd*dt; guardStayOnLane(g); }
+        if(Math.abs(tx-g.x)>6 && Math.abs(tgt.y-g.y)<T){ g.dir=sign(tx-g.x)||g.dir; g.face=g.dir; if(!guardBlocked(g,g.dir,spd,dt)) g.x+=g.dir*spd*dt; guardStayOnLane(g); }
         else { g.face=sign(tx-g.x)||g.face; }
       }
       g.sweepT=(g.sweepT||0)+dt;
       if(!see && g.sweepT>7){ g.floor=clamp(g.floor+9,0,60); g.aware=Math.min(2.2,g.aware*1.1); g.susp=g.floor; g.shouted=false; g.state='patrol'; g.sweepT=0; floater(g.x,g.y-20,'Hm.',PAL.draft); }
-      if(g.state==='alert' && Math.hypot(player.x-g.x,player.y-g.y)<18 && Math.abs(player.y-g.y)<T){ stats.cause='The watchman catches you by the sleeve!'; mode='caught'; }
+      if(g.state==='alert' && Math.hypot(player.x-g.x,player.y-g.y)<18 && Math.abs(player.y-g.y)<T){ stats.cause='The watchman catches you by the sleeve!'; mode='caught'; if(demo) demo.retryT=2.2; }
       break;
     }
   }
   g.walkPhase += Math.abs(g.x-gx0)*0.09;
 }
+function guardBlocked(g,dir,spd,dt){          // solid wall or shut door directly ahead on this lane?
+  const nx=g.x+dir*(9+spd*dt), ty=g.lane;
+  const tx=(nx/T)|0; return inb(tx,ty) && solid(idx(tx,ty)); }
 function guardStayOnLane(g){
   const ly=guardLaneY(g); g.y=lerp(g.y,ly,0.4);
   // reverse only at a real ledge — open air with no floor AND no ladder/rope to stand across
@@ -877,7 +900,7 @@ function guardVerticalChase(g,tgt,spd,dt){
   }
   if(best!=null){
     const bx=best*T+T/2;
-    if(Math.abs(bx-g.x)>5){ g.dir=sign(bx-g.x); g.face=g.dir; g.x+=g.dir*spd*dt; }
+    if(Math.abs(bx-g.x)>5){ g.dir=sign(bx-g.x); g.face=g.dir; if(!guardBlocked(g,g.dir,spd,dt)) g.x+=g.dir*spd*dt; }
     else { g.lane += sign(targetLane-g.lane); g.y=guardLaneY(g); }
   }
 }
@@ -893,10 +916,12 @@ function step(dt){
   if(msgState.t>0) msgState.t-=dt;
   if(tutMsg.t>0) tutMsg.t-=dt;
   if(levelIntroT>0) levelIntroT-=dt;
-  if(mode!=='play'){ return; }
+  if(demo && mode==='caught'){ demo.retryT-=dt; if(demo.retryT<=0) startDemo(demo.lv); return; }
+  if(!playing()){ return; }
   if(introLevel!==level){ introLevel=level; levelIntroT=2.8; }
+  if(mode==='demo') demoTick(dt);
   if(lock){ lockUpdate(dt); updateAction(0); }
-  else { playerUpdate(dt); tutorialTick(); }
+  else { playerUpdate(dt); if(mode==='play') tutorialTick(); }
   for(const g of guards) guardUpdate(g,dt);
   // vision / explored
   visSet = computeVis();
@@ -925,7 +950,10 @@ function tutorialTick(){
     if(inb(sx,sy)&&floorType[idx(sx,sy)]==='grate') tut('grate', `Press ${act} to drop through the grate into the sewer.`); }
   // underground, facing diggable earth
   if(belowGround() && fi>=0 && grid[fi]==='E' && !dug[fi] && mat[fi]!=='K')
-    tut('dig', `Hold ${act} to dig. Tunnel up beneath the vault.`);
+    tut('dig', `Hold ${act} to dig ahead \u2014 or hold UP/DOWN + ${act} to dig up or down. Shored tunnels have rungs to climb.`);
+  // weak boards underfoot (the vault floor)
+  { const ux=(player.x/T)|0, uy=((player.y+TIERS[player.tier].h*0.5+3)/T)|0;
+    if(inb(ux,uy)&&grid[idx(ux,uy)]==='w') tut('boardsDown', `Loose boards underfoot. Hold DOWN + ${act} to pry them up and drop into the earth.`); }
   // weak boards overhead
   { const ax=(player.x/T)|0, ay=((player.y/T)|0)-1; if(inb(ax,ay)&&grid[idx(ax,ay)]==='w') tut('digup', `Boards above. Hold ${act} to break up into the vault.`); }
   // a guard in view
@@ -969,7 +997,8 @@ function onKeyDown(e){
   keys[k]=true;
   ac();
   if([' ','arrowup','arrowdown','arrowleft','arrowright'].includes(k)) e.preventDefault();
-  if(mode==='title'){ if(k==='enter'||k===' ') mode='play'; return; }
+  if(demo){ if(fresh) stopDemo(); return; }
+  if(mode==='title'){ if(k==='d') startDemo(0); else if(k==='enter'||k===' ') mode='play'; return; }
   if(mode==='caught'||mode==='escaped'){ if(k==='r'||k==='enter'){ nextAfterEnd(); } return; }
   if(mode!=='play') return;
   if(fresh) handlePress(k);
@@ -1002,7 +1031,10 @@ function stickSet(cx,cy){
 function stickRelease(){ touch.stickId=null; touch.vec=[0,0]; touch.nub=[STICK.x,STICK.y]; }
 function goFullscreen(){ try{ const el=document.documentElement; if(el&&el.requestFullscreen&&!document.fullscreenElement){ el.requestFullscreen().then(()=>{ try{ screen.orientation&&screen.orientation.lock&&screen.orientation.lock('landscape').catch(()=>{});}catch(_){}}).catch(()=>{}); } }catch(_){} }
 function onTouchStart(e){ e.preventDefault(); touch.used=true; ac();
-  if(mode==='title'){ goFullscreen(); mode='play'; return; }
+  if(demo){ stopDemo(); return; }
+  if(mode==='title'){ const t0=e.changedTouches[0]; const [cx,cy]=canvasXY(t0);
+    if(cx<250 && cy>CH-HUD_H-90 && cy<CH-HUD_H-20){ startDemo(0); return; }
+    goFullscreen(); mode='play'; return; }
   if(mode==='caught'||mode==='escaped'){ nextAfterEnd(); return; }
   for(const t of e.changedTouches){ const [cx,cy]=canvasXY(t); let hit=null;
     for(const b of touchButtons) if(Math.hypot(cx-b.x,cy-b.y)<=b.r+10){ hit=b; break; }
@@ -1070,6 +1102,7 @@ function render(){
   if(mode==='title') drawTitle();
   else if(mode==='caught') drawEnd(false);
   else if(mode==='escaped') drawEnd(true);
+  drawDemoOverlay();
 }
 
 function drawSky(){
@@ -1333,7 +1366,7 @@ function drawVignette(){
   ctx.fillStyle=vg; ctx.fillRect(0,0,CW,gh);
   // danger flash — edges pulse red while a guard is alert (or amber while investigating)
   let heat=0, col='184,67,58';
-  if(mode==='play'){ for(const g of guards){ if(g.state==='alert'){ heat=Math.max(heat,1); }
+  if(playing()){ for(const g of guards){ if(g.state==='alert'){ heat=Math.max(heat,1); }
     else if(g.state==='investigate'){ heat=Math.max(heat,0.5); col=heat>=1?col:'233,162,59'; } } }
   if(heat>0){ const pulse=(0.5+0.5*Math.sin(gameT*(heat>=1?9:4)))*heat;
     const rg=ctx.createRadialGradient(CW/2,gh*0.5, gh*0.45, CW/2,gh*0.5, gh*0.95);
@@ -1342,7 +1375,7 @@ function drawVignette(){
 }
 
 function drawObjective(){
-  if(mode!=='play') return;
+  if(!playing()) return;
   uiTf();
   const got = loot.some(l=>l.type==='box'&&l.taken);
   ctx.textAlign='center'; ctx.textBaseline='alphabetic';
@@ -1353,7 +1386,7 @@ function drawObjective(){
 }
 
 function drawLevelIntro(){
-  if(levelIntroT<=0 || mode!=='play') return;
+  if(levelIntroT<=0 || !playing()) return;
   uiTf();
   const gh=CH-HUD_H, a=clamp(levelIntroT/0.6,0,1);
   ctx.globalAlpha=a; ctx.textAlign='center'; ctx.textBaseline='middle';
@@ -1867,6 +1900,14 @@ function drawTitle(){
   ctx.globalAlpha=blink; ctx.fillStyle=PAL.sodium; ctx.font='16px monospace';
   ctx.fillText(isTouchDevice?'\u2014 tap to begin the night \u2014':'\u2014 press ENTER to begin the night \u2014', CW/2, gh-40);
   ctx.globalAlpha=1;
+  // demo button (lower-left)
+  { const bw=226, bh=52, bx=24, by=gh-86;
+    roundRect(bx,by,bw,bh,10); ctx.fillStyle='rgba(46,66,96,0.25)'; ctx.fill();
+    ctx.lineWidth=1.5; ctx.strokeStyle=PAL.verd; ctx.stroke(); ctx.lineWidth=1;
+    ctx.textAlign='center'; ctx.fillStyle=PAL.verd; ctx.font='bold 13px monospace';
+    ctx.fillText('\u25B6  WATCH THE DEMO', bx+bw/2, by+22);
+    ctx.fillStyle='rgba(191,203,217,0.7)'; ctx.font='10px monospace';
+    ctx.fillText(isTouchDevice?'see how every challenge is beaten':'press D \u2014 see how every challenge is beaten', bx+bw/2, by+40); }
   ctx.textAlign='right'; ctx.fillStyle='rgba(120,133,150,0.5)'; ctx.font='10px monospace';
   ctx.fillText('build '+VERSION, CW-14, CH-12); ctx.textAlign='left';
 }
@@ -1893,6 +1934,143 @@ function drawTitleHouse(cx,cy){
   ctx.moveTo(fx,fy-8); ctx.lineTo(fx,fy); ctx.moveTo(fx,fy); ctx.lineTo(fx-3,fy+6); ctx.moveTo(fx,fy); ctx.lineTo(fx+3,fy+6); ctx.stroke();
   ctx.fillStyle=PAL.chalk; ctx.beginPath(); ctx.arc(fx,fy-11,2.4,0,TAU); ctx.fill();
   ctx.lineWidth=1;
+}
+
+
+// ============================================================
+// DEMO MODE — an autopilot plays the winning route through the real engine,
+// with captions explaining how to beat each challenge. Press D / tap DEMO on the title.
+// ============================================================
+let demo=null;
+function playing(){ return mode==='play' || mode==='demo'; }
+function startDemo(lv){
+  level=lv; introLevel=-1; resetRun(); mode='demo';
+  demo={ lv, steps:buildDemo(lv), i:0, cap:'', capT:0, retryT:0, doneT:0, msg:'' };
+}
+function stopDemo(){ demo=null; level=prog.level; resetRun(); mode='title'; }
+function demoEscaped(){
+  if(demo.lv+1<LEVELS){ demo.msg=`${LEVEL_INFO[demo.lv].name} \u2014 cleared. On to the next job\u2026`; demo.doneT=2.6; demo.next=demo.lv+1; }
+  else { demo.msg='Every job cleared. That\u2019s how it\u2019s done \u2014 quietly.'; demo.doneT=3.2; demo.next=-1; }
+  demo.i=demo.steps.length;                    // stop scripting; the finish timer takes over
+}
+function demoTick(dt){
+  for(const k of ['a','d','w','s',' ','e']) keys[k]=false;     // autopilot re-asserts inputs each frame
+  if(demo.doneT>0){ demo.doneT-=dt; if(demo.doneT<=0){ if(demo.next>=0) startDemo(demo.next); else stopDemo(); } return; }
+  if(demo.i>=demo.steps.length) return;
+  const st=demo.steps[demo.i];
+  if(st.cap && demo.cap!==st.cap){ demo.cap=st.cap; demo.capT=0; }
+  demo.capT+=dt;
+  if(st.run(dt)){ demo.i++; }
+}
+// step primitives (return true when finished)
+const D={
+  say:(cap,hold=1.6)=>({cap,t:0,run(dt){ this.t+=dt; return this.t>=hold; }}),
+  goTo:(tx,cap,opt={})=>({cap,run(){ const target=tx*T, dx=target-player.x;   // tx = position in tiles
+    if(Math.abs(dx)<3){ player.vx=0; return true; } keys[dx>0?'d':'a']=true; if(opt.run) keys[' ']=true; return false; }}),
+  sneak:(on,cap)=>({cap,run(){ if(player.sneak!==on) handlePress('sneak'); return true; }}),
+  face:(dir)=>({run(){ player.dir=dir; return true; }}),
+  act:(cap)=>({cap,started:false,run(){
+    if(!this.started){ this.started=true; tryInteract(); return false; }
+    if(lock){ const pn=lock.pins[lock.cur]; if(pn){ mouse.x=(pn.c/90)*CW; keys[' ']=true; } return false; }
+    if(action){ keys['e']=true; return false; }
+    return true; }}),
+  waitFor:(fn,cap)=>({cap,run(){ return !!fn(); }}),
+  wait:(sec,cap)=>({cap,t:0,run(dt){ this.t+=dt; return this.t>=sec; }}),
+  climb:(dir,toRow,cap)=>({cap,run(){ const row=(player.y/T)|0; if(dir<0? row<=toRow : row>=toRow) return true;
+    keys[dir<0?'w':'s']=true; return false; }}),
+  // wait for a full pass: guard first heads the OTHER way (turns/back), then comes past xAfter heading `dir`
+  waitPass:(g,dir,xAfter,cap)=>({cap,ph:0,run(){ const x=g.x/T;
+    if(this.ph===0){ if(g.dir===-dir) this.ph=1; return false; }
+    return g.dir===dir && (dir>0 ? x>xAfter : x<xAfter); }}),
+  digDown:(toRow,cap)=>({cap,run(){ const row=(player.y/T)|0; if(row>=toRow) return true;
+    if(action){ keys['e']=true; return false; }
+    if(!player.onGround && !player.climbing) return false;      // let the drop finish
+    keys['s']=true; tryInteract(); return false; }}),
+};
+const G=name=>guards.find(g=>g.id===name);
+const gx=g=>g.x/T;
+
+function buildDemo(lv){
+  if(lv===0){ const w=G('watchman'); return [
+    D.say('NIGHT 1 \u2014 the chandler shorted my wages. Time to take back what\u2019s owed.', 2.2),
+    D.goTo(11.6,'CHALLENGE: the shop door. Walk up the lane \u2014 the street\u2019s empty tonight.'),
+    D.face(1),
+    D.waitFor(()=>w.dir===1 && gx(w)>17.5,'The watchman\u2019s inside. Listen\u2026 wait until his footsteps head AWAY from the door.'),
+    D.act('Door\u2019s unlocked \u2014 ACT opens it. Go now, while his back is turned.'),
+    D.goTo(16.5,'CHALLENGE: the watchman. Get behind the bookcase before he turns around.'),
+    D.sneak(true,'SNEAK by furniture = HIDDEN. He can walk right past and never know.'),
+    D.waitFor(()=>w.dir===1 && gx(w)>17.8,'Stay hidden while he passes. Move only when he\u2019s walking AWAY again.'),
+    D.goTo(18.5,'Leapfrog: creep two tiles to the barrel while his back is turned.'),
+    D.waitFor(()=>w.dir===1 && gx(w)>=20.0,'By the barrel. He\u2019s still walking away \u2014 keep leapfrogging behind him.'),
+    D.sneak(false),
+    D.goTo(24.5,'Now walk behind him \u2014 never faster than a stroll, never closer than a tile.'),
+    D.sneak(true,'The far bookcase. Hide before he turns at the end of his beat.'),
+    D.waitFor(()=>w.dir===-1 && gx(w)<22.5,'He turns and walks back past you. Wait for him to clear the door\u2026'),
+    D.sneak(false), D.goTo(27.6), D.face(1),
+    D.act('CHALLENGE: the lock. Hold TENSION (space / button) and sweep the pick to each pin\u2019s sweet spot.'),
+    D.goTo(32.8,'In. The back room is out of his beat \u2014 breathe.'),
+    D.act('CHALLENGE: the cashbox. Stand beside it and hold ACT to empty it.'),
+    D.goTo(35.6,'Now OUT \u2014 not the front door. The window on the right wall leads to the alley side.'),
+    D.face(1),
+    D.act('CHALLENGE: the window. Hold ACT to cut the pane. Quiet, but it takes a while.'),
+    D.goTo(40.5,'Through the window and onto the street.'),
+    D.goTo(61.5,'Nobody out here \u2014 RUN for the glowing alley. Escape = job done.',{run:true}),
+  ]; }
+  // level 2: the counting house
+  const gr=G('ground'), st=G('street');
+  return [
+    D.say('NIGHT 2 \u2014 the banker\u2019s strongbox. A guard paces the ground floor, one the study upstairs, and the street watch walks the lane by the alley.', 2.8),
+    D.goTo(7.6,'CHALLENGE: the front door. The street watch can\u2019t see this side of the house \u2014 but listen for the guard inside.'),
+    D.face(1),
+    D.waitFor(()=>gr.dir===1 && gx(gr)>13,'Wait until his footsteps head AWAY from the door\u2026'),
+    D.act('A 3-pin lock. Tension, sweep, set each pin. Quick and calm.'),
+    D.goTo(11.5,'In. There\u2019s a hall cupboard by the door \u2014 get to it before he turns.'),
+    D.sneak(true,'HIDDEN. He walks his beat right past you and never knows.'),
+    D.waitPass(gr,1,12.3,'Wait\u2026 he turns at the far end, comes back past you, turns again. Go the moment he\u2019s past.'),
+    D.goTo(16.5,'Leapfrog to the crate \u2014 SNEAKING. Footsteps carry; a sneak is silent, and he\u2019s faster, so you never catch him up.'),
+    D.waitPass(gr,1,17.3,'Hidden by the crate. Same again: let him pass, then creep after him.'),
+    D.goTo(20.5,'Next hide: the grandfather clock. Still sneaking.'),
+    D.wait(0.1,'Hidden by the clock.'),
+    D.waitPass(gr,-1,18.5,'He heads back toward the front \u2014 that\u2019s our window.'),
+    D.sneak(false),
+    D.goTo(23.6,'The counting-room door is unlocked \u2014 ACT opens it.'), D.face(1), D.act(),
+    D.goTo(31.6,'CHALLENGE: the strongroom door \u2014 a 4-pin lock. Pick it while he\u2019s at the far end of the house.'), D.face(1),
+    D.act('Four pins, same rhythm: tension, sweep, listen for the click.'),
+    D.goTo(34.5,'The vault. The door\u2019s open now, so his beat reaches in here \u2014 there\u2019s a cabinet to duck behind.'),
+    D.sneak(true,'Hidden by the cabinet.'),
+    D.waitFor(()=>gr.dir===-1 && gx(gr)<27,'Wait for him to turn and walk away\u2026'),
+    D.sneak(false),
+    D.goTo(36.7,'CHALLENGE: the strongbox.'),
+    D.act('Hold ACT to empty it. This is the take.'),
+    D.goTo(35.5,'CHALLENGE: getting out. The street watch guards the lane \u2014 so we go UNDER it. The vault floor is loose boards.'),
+    D.waitFor(()=>gr.dir===-1 && gx(gr)<29,'Wait for the guard to walk away before making noise.'),
+    D.digDown(19,'Hold DOWN + ACT to pry up the boards, then keep digging straight down. The shoring gives you rungs.'),
+    D.digDown(25,'Clay, then loam. Every tunnel needs timber \u2014 lucky it goes in as you dig.'),
+    D.wait(0.6,'You break through into the sewer main.'),
+    D.goTo(59.5,'Follow the sewer east under the whole street. Nobody hears you down here.',{run:true}),
+    D.waitFor(()=>!(st.dir===1 && gx(st)>52),'The alley manhole. Listen for the street watch \u2014 climb when he\u2019s walking away.'),
+    D.climb(-1,16,'Up the ladder.'),
+    D.goTo(61.5,'Two steps to the alley. Escape with the strongbox \u2014 the night is won.',{run:true}),
+  ];
+}
+
+function drawDemoOverlay(){
+  if(!demo) return;
+  uiTf(); const gh=CH-HUD_H;
+  // badge
+  ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+  ctx.fillStyle='rgba(233,162,59,0.92)'; ctx.font='bold 12px monospace';
+  ctx.fillText('\u25B6 DEMO \u2014 watching the winning route', 18, 40);
+  ctx.fillStyle='rgba(191,203,217,0.6)'; ctx.font='10px monospace';
+  ctx.fillText(touch.used?'tap anywhere to stop':'press any key to stop', 18, 54);
+  // caption card
+  const text = demo.doneT>0 ? demo.msg : (mode==='caught' ? 'Caught! Even the demo slips up. Running that part again\u2026' : demo.cap);
+  if(text){ ctx.font='13px monospace'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    const tw=Math.min(CW-80, (ctx.measureText(text).width|0)+44); const h=40, x=(CW-tw)/2, y=gh-70;
+    roundRect(x,y,tw,h,10); ctx.fillStyle='rgba(10,12,17,0.9)'; ctx.fill();
+    ctx.lineWidth=1.5; ctx.strokeStyle=demo.doneT>0?PAL.verd:PAL.sodium; ctx.stroke(); ctx.lineWidth=1;
+    ctx.fillStyle=PAL.chalk; ctx.fillText(text, CW/2, y+h/2+1);
+    ctx.textAlign='left'; ctx.textBaseline='alphabetic'; }
 }
 
 function drawEnd(escaped){
@@ -1938,7 +2116,7 @@ function boot(){
   canvas.addEventListener('touchcancel', onTouchEnd, { passive:false });
   canvas.addEventListener('contextmenu', e=>e.preventDefault&&e.preventDefault());
   canvas.addEventListener('mousemove', e=>{ const r=canvas.getBoundingClientRect(); mouse.x=(e.clientX-r.left)*(CW/r.width); mouse.y=(e.clientY-r.top)*(CH/r.height); });
-  canvas.addEventListener('mousedown', ()=>{ ac(); if(mode==='title') mode='play'; else if(mode==='caught'||mode==='escaped'){ nextAfterEnd(); } });
+  canvas.addEventListener('mousedown', ()=>{ ac(); if(demo){ stopDemo(); return; } if(mode==='title') mode='play'; else if(mode==='caught'||mode==='escaped'){ nextAfterEnd(); } });
   // When the device rotates or the window resizes, any in-progress joystick anchor
   // (stored in canvas pixels) becomes stale and movement directions can go haywire.
   // Drop all live input so the player starts clean in the new layout.
@@ -1969,6 +2147,7 @@ if(typeof window!=='undefined'){
     idx, W, H, T, CW, CH, VW, VH, HUD_H,
     get level(){ return level; }, set level(v){ level=v; }, get LEVELS(){ return LEVELS; },
     get hideCells(){ return hideCells; }, get decor(){ return decor; }, get visSet(){ return visSet; },
+    startDemo, stopDemo, get demo(){ return demo; },
   };
   if(typeof document!=='undefined' && document.getElementById && document.getElementById('g')) boot();
   else if(typeof document!=='undefined' && document.addEventListener) document.addEventListener('DOMContentLoaded', boot);

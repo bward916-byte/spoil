@@ -141,7 +141,7 @@ const LEVEL_INFO = [
 const LEVEL_NAMES = LEVEL_INFO.map(l=>l.name);
 const LEVELS = LEVEL_INFO.length;
 const SAVE_KEY = 'spoil.progress.v1';
-const VERSION = '2026.09.09-0122';
+const VERSION = '2026.09.09-0243';
 let prog = { xp:0, best:0, level:0 };
 function save(){ try{ if(typeof localStorage!=='undefined') localStorage.setItem(SAVE_KEY, JSON.stringify(prog)); }catch(e){} }
 function load(){ try{ if(typeof localStorage!=='undefined'){ const r=localStorage.getItem(SAVE_KEY);
@@ -2472,6 +2472,7 @@ function startDemo(lv){
 }
 function stopDemo(){ demo=null; level=prog.level; resetRun(); mode='title'; }
 function demoEscaped(){
+  if(demo.doneT>0) return;                     // already counting down — don't restart the timer every frame
   if(demo.lv+1<LEVELS){ demo.msg=`${LEVEL_INFO[demo.lv].name} \u2014 cleared. On to the next job\u2026`; demo.doneT=2.6; demo.next=demo.lv+1; }
   else { demo.msg='Every job cleared. That\u2019s how it\u2019s done \u2014 quietly.'; demo.doneT=3.2; demo.next=-1; }
   demo.i=demo.steps.length;                    // stop scripting; the finish timer takes over

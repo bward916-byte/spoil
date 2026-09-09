@@ -141,7 +141,7 @@ const LEVEL_INFO = [
 const LEVEL_NAMES = LEVEL_INFO.map(l=>l.name);
 const LEVELS = LEVEL_INFO.length;
 const SAVE_KEY = 'spoil.progress.v1';
-const VERSION = '2026.09.09-0056';
+const VERSION = '2026.09.09-0119';
 let prog = { xp:0, best:0, level:0 };
 function save(){ try{ if(typeof localStorage!=='undefined') localStorage.setItem(SAVE_KEY, JSON.stringify(prog)); }catch(e){} }
 function load(){ try{ if(typeof localStorage!=='undefined'){ const r=localStorage.getItem(SAVE_KEY);
@@ -162,7 +162,7 @@ function drawParts(){ for(const p of parts){ const a=1-p.life/p.max; ctx.globalA
   else if(p.kind==='spark'){ ctx.fillStyle=p.col; ctx.fillRect(p.x-0.6,p.y-2,1.2,4); ctx.fillRect(p.x-2,p.y-0.6,4,1.2); }
   else { ctx.fillStyle=p.col; ctx.beginPath(); ctx.arc(p.x,p.y,p.size*(0.6+a*0.6),0,TAU); ctx.fill(); } }
   ctx.globalAlpha=1; ctx.lineWidth=1; }
-let levelIntroT=0, introLevel=-1, fadeT=0, flashT=0, alertCount=0, landT=0, idleT=0, irisT=0, endT=0, noiseMeter=0;
+let levelIntroT=0, introLevel=-1, fadeT=0, flashT=0, alertCount=0, landT=0, idleT=0, irisT=0, endT=0, noiseMeter=0, levelT=0;
 function nextAfterEnd(){ if(mode==='escaped') level=(level+1)%LEVELS; introLevel=-1; resetRun(); mode='play'; }
 let lock, action;
 
@@ -541,7 +541,7 @@ function settleHeist(){
   save();
 }
 function msg(t){ msgState={text:t,t:4}; }
-function tut(id,text){ if(tutSeen.has(id)) return; tutSeen.add(id); tutMsg={text,t:6}; }
+function tut(id,text){ if(tutSeen.has(id)) return; tutSeen.add(id); tutMsg={text,t:6,id}; }
 function floater(x,y,text,col){ floaters.push({x,y,text,col:col||PAL.chalk,t:2.2}); }
 
 const GRAV = 900, TERMV = 520, JUMP = 260;
@@ -955,7 +955,8 @@ function step(dt){
   if(irisT>0) irisT-=dt; if(mode==='caught'||mode==='escaped') endT+=dt;
   if(demo && mode==='caught'){ demo.retryT-=dt; if(demo.retryT<=0) startDemo(demo.lv); return; }
   if(!playing()){ return; }
-  if(introLevel!==level){ introLevel=level; levelIntroT=2.8; fadeT=0.9; }
+  if(introLevel!==level){ introLevel=level; levelIntroT=2.8; fadeT=0.9; levelT=0; }
+  levelT+=dt;
   if(fadeT>0) fadeT-=dt; if(flashT>0) flashT-=dt; if(landT>0) landT-=dt; noiseMeter=Math.max(0,noiseMeter-dt*0.9);
   idleT = (Math.abs(player.vx)<4 && !player.climbing && !action) ? idleT+dt : 0;
   { const n=guards.filter(g=>g.state==='alert').length; if(n>alertCount){ flashT=0.35; shake=Math.max(shake,0.3); } alertCount=n; }
@@ -1039,6 +1040,8 @@ function onKeyDown(e){
   ac();
   if([' ','arrowup','arrowdown','arrowleft','arrowright'].includes(k)) e.preventDefault();
   if(demo){ if(fresh) stopDemo(); return; }
+  if(mode==='paused'){ if(fresh) resumeGame(); return; }
+  if(mode==='play' && k==='p' && fresh){ pauseGame(); return; }
   if(mode==='title'){ if(k==='d') startDemo(0); else if(k==='enter'||k===' ') mode='play'; return; }
   if(mode==='caught'||mode==='escaped'){ if(k==='r'||k==='enter'){ nextAfterEnd(); } return; }
   if(mode!=='play') return;
@@ -1073,6 +1076,8 @@ function stickRelease(){ touch.stickId=null; touch.vec=[0,0]; touch.nub=[STICK.x
 function goFullscreen(){ try{ const el=document.documentElement; if(el&&el.requestFullscreen&&!document.fullscreenElement){ el.requestFullscreen().then(()=>{ try{ screen.orientation&&screen.orientation.lock&&screen.orientation.lock('landscape').catch(()=>{});}catch(_){}}).catch(()=>{}); } }catch(_){} }
 function onTouchStart(e){ e.preventDefault(); touch.used=true; ac();
   if(demo){ stopDemo(); return; }
+  if(mode==='paused'){ resumeGame(); return; }
+  if(mode==='play'){ const t0=e.changedTouches[0]; const [cx,cy]=canvasXY(t0); if(cx>CW-64 && cy<40){ pauseGame(); return; } }
   if(mode==='title'){ const t0=e.changedTouches[0]; const [cx,cy]=canvasXY(t0);
     if(titleHit(cx,cy)==='demo'){ startDemo(0); return; }
     goFullscreen(); mode='play'; return; }
@@ -1146,6 +1151,7 @@ function render(){
   if(lock) drawLock();
   buildTouchButtons(); drawTouchUI();
   if(mode==='title') drawTitle();
+  else if(mode==='paused') drawPaused();
   else if(mode==='caught') drawEnd(false);
   else if(mode==='escaped') drawEnd(true);
   drawDemoOverlay();
@@ -1296,7 +1302,7 @@ function ambientFx(dt){
   const breathe=(x,y,dir,rate)=>{ if(Math.random()<dt*rate) spawn(1,x+dir*4,y-14,{col:'rgba(200,215,235,0.35)',size:1.4,speed:6,ang:dir>0?0:Math.PI,spread:0.6,life:1.1,grav:-8}); };
   if(outdoors((player.x/T)|0,(player.y/T)|0) && player.y<18*T) breathe(player.x,player.y,player.dir,0.7);
   // guards mutter to themselves on their rounds
-  if(Math.random()<dt*0.09){ const g=guards[(Math.random()*guards.length)|0]; if(g && g.state==='patrol' && visSet.has(idx((g.x/T)|0,(g.y/T)|0))){
+  if(Math.random()<dt*0.09){ const g=guards[(Math.random()*guards.length)|0]; if(g && g.state==='patrol' && !(g.sayT>gameT) && visSet.has(idx((g.x/T)|0,(g.y/T)|0))){ g.sayT=gameT+6;
     const lines=['\u2026cold tonight.','hmph.','all quiet.','was that the wind?','my feet ache.','\u266a la, la\u2026','nearly done.','tea after this.'];
     floater(g.x,g.y-26,lines[(Math.random()*lines.length)|0],'rgba(191,203,217,0.8)'); } }
   // sewer mist curling up through the street grate and the alley manhole
@@ -1592,11 +1598,12 @@ function drawVignette(){
 
 function drawObjective(){
   if(!playing()) return;
+  if(touch.used && mode==='play'){ uiTf(); roundRect(CW-52,8,40,22,6); ctx.fillStyle='rgba(10,12,17,0.6)'; ctx.fill(); ctx.strokeStyle='rgba(46,66,96,0.8)'; ctx.stroke(); ctx.fillStyle=PAL.chalk; ctx.fillRect(CW-38,13,4,12); ctx.fillRect(CW-30,13,4,12); }
   uiTf();
   const got = loot.some(l=>l.type==='box'&&l.taken);
   ctx.textAlign='center'; ctx.textBaseline='middle';
   ctx.font='11px monospace';
-  const L=LEVEL_INFO[level]; const txt=`${L.name}, ${L.place}  \u2014  ${got?'ESCAPE to the lit alley (right)':L.goal}`;
+  const L=LEVEL_INFO[level]; const txt=`${L.name}, ${L.place}  \u2014  ${got?'\u2713 strongbox taken \u00b7 ESCAPE to the lit alley (right)':L.goal}`;
   const tw=(ctx.measureText(txt).width|0)+30; roundRect(CW/2-tw/2,8,tw,22,11); ctx.fillStyle='rgba(10,12,17,0.6)'; ctx.fill();
   ctx.strokeStyle=got?'rgba(78,156,134,0.5)':'rgba(46,66,96,0.7)'; ctx.stroke();
   ctx.fillStyle=got?'rgba(78,156,134,0.95)':'rgba(170,180,195,0.95)'; ctx.fillText(txt, CW/2, 19); ctx.textBaseline='alphabetic';
@@ -1606,7 +1613,8 @@ function drawObjective(){
 function drawMinimap(){
   if(!playing()) return; uiTf();
   const sc=2.2, mw=W*sc, mh=H*sc, mx=CW-mw-14, my=36;
-  roundRect(mx-4,my-4,mw+8,mh+8,6); ctx.fillStyle='rgba(8,12,20,0.82)'; ctx.fill(); ctx.strokeStyle='rgba(78,110,150,0.6)'; ctx.stroke();
+  const seen=guards.some(g=>visSet.has(idx((g.x/T)|0,(g.y/T)|0)));
+  roundRect(mx-4,my-4,mw+8,mh+8,6); ctx.fillStyle='rgba(8,12,20,0.82)'; ctx.fill(); ctx.strokeStyle=seen?`rgba(184,67,58,${0.6+0.3*Math.sin(gameT*5)})`:'rgba(78,110,150,0.6)'; ctx.stroke();
   for(let y=0;y<H;y++) for(let x=0;x<W;x++){ const i=idx(x,y); if(!exploredSet.has(i)) continue; const k=grid[i]; const vis=visSet.has(i);
     let c=null; if(k==='#') c=vis?'rgba(120,150,200,0.9)':'rgba(78,110,150,0.55)'; else if(k==='='||k==='w') c=vis?'rgba(120,150,200,0.7)':'rgba(78,110,150,0.4)';
     else if(k==='E'&&!dug[i]) c='rgba(60,70,90,0.35)'; else if(k==='K') c='rgba(50,55,70,0.5)'; else if(k==='X') c=PAL.verd; else if(k==='D') c=PAL.sodium; else if(k==='H'||k==='S'||(k==='E'&&dug[i])) c='rgba(78,110,150,0.3)';
@@ -1629,8 +1637,8 @@ function drawLevelIntro(){
   const L=LEVEL_INFO[level];
   ctx.fillStyle=PAL.sodium; ctx.font='bold 13px monospace';
   ctx.fillText(`NIGHT ${level+1} \u00b7 ${L.place.toUpperCase()}`, CW/2, gh/2-30);
-  ctx.fillStyle=PAL.chalk; ctx.font='bold 30px monospace';
-  ctx.fillText(L.name, CW/2, gh/2);
+  { const z=1+0.12*clamp((levelIntroT-2.2)/0.6,0,1); ctx.save(); ctx.translate(CW/2,gh/2); ctx.scale(z,z); ctx.fillStyle=PAL.chalk; ctx.font='bold 30px monospace'; ctx.fillText(L.name, 0, 0); ctx.restore(); }
+  ctx.fillStyle='rgba(233,162,59,0.7)'; ctx.fillRect(CW/2-120,gh/2+10,240,1);
   ctx.fillStyle=PAL.draft; ctx.font='12px monospace';
   ctx.fillText(L.blurb, CW/2, gh/2+28);
   ctx.fillStyle='rgba(233,162,59,0.8)';
@@ -1648,10 +1656,23 @@ function drawTutorial(){
   ctx.globalAlpha=a*0.92;
   roundRect(x,y,w,h,10); ctx.fillStyle='rgba(14,18,26,0.96)'; ctx.fill();
   ctx.lineWidth=1.5; ctx.strokeStyle=PAL.sodium; ctx.stroke();
-  // little lightbulb dot
-  ctx.fillStyle=PAL.sodium; ctx.beginPath(); ctx.arc(x+18,y+h/2,4,0,TAU); ctx.fill();
+  // icon by hint
+  { const ix=x+19, iy=y+h/2, id=tutMsg.id||''; ctx.strokeStyle=PAL.sodium; ctx.fillStyle=PAL.sodium; ctx.lineWidth=1.8; ctx.lineCap='round';
+    if(id==='move'){ ctx.beginPath(); ctx.moveTo(ix-8,iy); ctx.lineTo(ix+8,iy); ctx.moveTo(ix+4,iy-4); ctx.lineTo(ix+8,iy); ctx.lineTo(ix+4,iy+4); ctx.moveTo(ix-4,iy-4); ctx.lineTo(ix-8,iy); ctx.lineTo(ix-4,iy+4); ctx.stroke(); }
+    else if(id==='climb'){ ctx.beginPath(); ctx.moveTo(ix-4,iy-8); ctx.lineTo(ix-4,iy+8); ctx.moveTo(ix+4,iy-8); ctx.lineTo(ix+4,iy+8); for(let r=-5;r<=5;r+=5){ ctx.moveTo(ix-4,iy+r); ctx.lineTo(ix+4,iy+r); } ctx.stroke(); }
+    else if(id==='lock'){ ctx.beginPath(); ctx.arc(ix,iy-3,4,Math.PI,0); ctx.stroke(); roundRect(ix-6,iy-2,12,9,2); ctx.fill(); }
+    else if(id==='door'){ ctx.strokeRect(ix-5,iy-8,10,16); ctx.beginPath(); ctx.arc(ix+2,iy+1,1.2,0,TAU); ctx.fill(); }
+    else if(id==='window'){ ctx.strokeRect(ix-7,iy-6,14,12); ctx.beginPath(); ctx.moveTo(ix,iy-6); ctx.lineTo(ix,iy+6); ctx.moveTo(ix-7,iy); ctx.lineTo(ix+7,iy); ctx.stroke(); }
+    else if(id==='guard'){ ctx.beginPath(); ctx.ellipse(ix,iy,8,4.5,0,0,TAU); ctx.stroke(); ctx.beginPath(); ctx.arc(ix,iy,2,0,TAU); ctx.fill(); }
+    else if(id==='hide'){ ctx.beginPath(); ctx.ellipse(ix,iy,8,4.5,0,0,TAU); ctx.stroke(); ctx.beginPath(); ctx.moveTo(ix-8,iy+6); ctx.lineTo(ix+8,iy-6); ctx.stroke(); }
+    else if(id==='run'){ ctx.beginPath(); ctx.moveTo(ix+2,iy-9); ctx.lineTo(ix-5,iy+1); ctx.lineTo(ix,iy+1); ctx.lineTo(ix-2,iy+9); ctx.lineTo(ix+5,iy-1); ctx.lineTo(ix,iy-1); ctx.closePath(); ctx.fill(); }
+    else if(id==='box'||id==='escape'){ roundRect(ix-7,iy-4,14,10,2); ctx.fill(); ctx.fillStyle=PAL.void; ctx.fillRect(ix-1.5,iy-1,3,2.5); }
+    else if(id==='dig'||id==='digup'||id==='boardsDown'){ ctx.beginPath(); ctx.moveTo(ix-6,iy+7); ctx.lineTo(ix+5,iy-4); ctx.stroke(); ctx.beginPath(); ctx.arc(ix+5,iy-4,5,Math.PI*1.1,Math.PI*1.9); ctx.stroke(); }
+    else if(id==='grate'){ ctx.strokeRect(ix-7,iy-4,14,8); ctx.beginPath(); for(let k=-4;k<=4;k+=4){ ctx.moveTo(ix+k,iy-4); ctx.lineTo(ix+k,iy+4); } ctx.stroke(); }
+    else { ctx.beginPath(); ctx.arc(ix,iy,4,0,TAU); ctx.fill(); }
+    ctx.lineWidth=1; ctx.lineCap='butt'; }
   ctx.globalAlpha=a;
-  ctx.fillStyle=PAL.chalk; ctx.fillText(tutMsg.text, CW/2+8, y+h/2+1);
+  ctx.fillStyle=PAL.chalk; ctx.fillText(tutMsg.text, CW/2+12, y+h/2+1);
   ctx.globalAlpha=1; ctx.lineWidth=1; ctx.textAlign='left'; ctx.textBaseline='alphabetic';
 }
 
@@ -2049,6 +2070,15 @@ function drawHUD(){
   // take
   ctx.fillStyle=PAL.sodium; ctx.font='bold 15px monospace'; ctx.fillText(`take  ${player.lootVal}`, 350, y0+52);
 
+  // loot tracker: one pip per piece, filled when taken
+  { const n=loot.length; ctx.font='9px monospace'; ctx.fillStyle=PAL.draft; ctx.fillText('LOOT', 470, y0+24);
+    for(let i=0;i<n;i++){ const l=loot[i]; const px=506+i*13, py=y0+21; if(l.type==='box'){ ctx.fillStyle=l.taken?PAL.sodium:'rgba(120,130,150,0.3)'; ctx.fillRect(px-4,py-4,9,8); }
+      else { ctx.fillStyle=l.taken?PAL.sodium:'rgba(120,130,150,0.3)'; ctx.beginPath(); ctx.arc(px,py,3.5,0,TAU); ctx.fill(); } }
+    ctx.fillStyle=PAL.chalk; ctx.font='11px monospace'; ctx.fillText(`${loot.filter(l=>l.taken).length}/${n}`, 506+n*13+6, y0+25); }
+  // night chip + elapsed
+  { ctx.font='bold 10px monospace'; const lbl=`NIGHT ${level+1}`; const w=(ctx.measureText(lbl).width|0)+16; roundRect(470,y0+36,w,18,9); ctx.fillStyle='rgba(233,162,59,0.14)'; ctx.fill(); ctx.strokeStyle=PAL.sodium; ctx.globalAlpha=0.7; ctx.stroke(); ctx.globalAlpha=1;
+    ctx.fillStyle=PAL.sodium; ctx.fillText(lbl, 478, y0+49);
+    const mm=(levelT/60)|0, ss=(levelT%60)|0; ctx.fillStyle=PAL.draft; ctx.font='10px monospace'; ctx.fillText(`${mm}:${ss<10?'0':''}${ss}`, 478+w+8, y0+49); }
   // depth / location, right
   const depth=((player.y/T)|0)-18;
   ctx.textAlign='right'; ctx.fillStyle=PAL.draft; ctx.font='11px monospace';
@@ -2208,37 +2238,54 @@ function drawLock(){
   ctx.fillText(tension?'\u25CF TENSION HELD — sweep to each pin':(touch.used?'hold TENSION and sweep':'hold SPACE and move the pick'), CW/2, y+h-8);
 }
 
+function keycap(x,y,label,col){ ctx.font='bold 10px monospace'; const w=Math.max(18,(ctx.measureText(label).width|0)+10);
+  roundRect(x-w/2,y-9,w,18,4); ctx.fillStyle='rgba(10,12,17,0.9)'; ctx.fill(); ctx.strokeStyle=col||PAL.chalk; ctx.lineWidth=1; ctx.stroke();
+  ctx.fillStyle=col||PAL.chalk; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(label,x,y+0.5); ctx.textBaseline='alphabetic'; ctx.textAlign='left'; return w; }
 function drawTouchUI(){
   if(!touch.used) return;
   uiTf();
-  // fixed thumbstick (only during play, not while picking a lock)
   if(mode==='play' && !lock){
-    const active=touch.stickId!=null;
-    // base ring
-    ctx.globalAlpha=active?0.28:0.20; ctx.fillStyle=PAL.draft;
-    ctx.beginPath(); ctx.arc(STICK.x,STICK.y,STICK.r,0,TAU); ctx.fill();
-    ctx.globalAlpha=active?0.8:0.55; ctx.strokeStyle=PAL.chalk; ctx.lineWidth=2.5;
-    ctx.beginPath(); ctx.arc(STICK.x,STICK.y,STICK.r,0,TAU); ctx.stroke();
-    // faint direction ticks
-    ctx.globalAlpha=0.3; ctx.strokeStyle=PAL.chalk; ctx.lineWidth=1.5;
-    for(let a=0;a<4;a++){ const th=a*Math.PI/2; const r0=STICK.r-12,r1=STICK.r-4;
-      ctx.beginPath(); ctx.moveTo(STICK.x+Math.cos(th)*r0,STICK.y+Math.sin(th)*r0);
-      ctx.lineTo(STICK.x+Math.cos(th)*r1,STICK.y+Math.sin(th)*r1); ctx.stroke(); }
-    // nub
+    const active=touch.stickId!=null, vx=touch.vec[0], hard=active&&Math.abs(vx)>0.88;
+    // base
+    const bg=ctx.createRadialGradient(STICK.x,STICK.y,STICK.r*0.3,STICK.x,STICK.y,STICK.r); bg.addColorStop(0,'rgba(46,66,96,0.10)'); bg.addColorStop(1,'rgba(46,66,96,0.30)');
+    ctx.fillStyle=bg; ctx.beginPath(); ctx.arc(STICK.x,STICK.y,STICK.r,0,TAU); ctx.fill();
+    ctx.globalAlpha=active?0.85:0.55; ctx.strokeStyle=PAL.chalk; ctx.lineWidth=2; ctx.beginPath(); ctx.arc(STICK.x,STICK.y,STICK.r,0,TAU); ctx.stroke();
+    // run rim: lights up when the push is hard enough to sprint
+    ctx.globalAlpha=hard?0.95:0.25; ctx.strokeStyle=hard?PAL.sodium:PAL.draft; ctx.lineWidth=3; ctx.beginPath(); ctx.arc(STICK.x,STICK.y,STICK.r+7,0,TAU); ctx.stroke();
+    ctx.globalAlpha=hard?1:0.45; ctx.fillStyle=hard?PAL.sodium:PAL.draft; ctx.font='bold 9px monospace'; ctx.textAlign='center'; ctx.fillText('RUN',STICK.x,STICK.y+STICK.r+22);
+    // direction glyphs
+    ctx.globalAlpha=0.55; ctx.fillStyle=PAL.chalk; const r0=STICK.r-14;
+    for(const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]){ const gx=STICK.x+dx*r0, gy=STICK.y+dy*r0; ctx.beginPath();
+      ctx.moveTo(gx+dx*5+dy*0, gy+dy*5); ctx.lineTo(gx-dx*3-dy*4, gy-dy*3-dx*4); ctx.lineTo(gx-dx*3+dy*4, gy-dy*3+dx*4); ctx.closePath(); ctx.fill(); }
+    // nub with a soft shadow
     const nx=touch.nub[0], ny=touch.nub[1];
-    ctx.globalAlpha=active?0.55:0.4; ctx.fillStyle=active?PAL.verd:PAL.draft;
-    ctx.beginPath(); ctx.arc(nx,ny,STICK.nub,0,TAU); ctx.fill();
-    ctx.globalAlpha=active?1:0.7; ctx.strokeStyle=PAL.chalk; ctx.lineWidth=2.5;
-    ctx.beginPath(); ctx.arc(nx,ny,STICK.nub,0,TAU); ctx.stroke();
-    ctx.globalAlpha=1; ctx.lineWidth=1;
+    ctx.globalAlpha=0.35; ctx.fillStyle='#000'; ctx.beginPath(); ctx.arc(nx+2,ny+3,STICK.nub,0,TAU); ctx.fill();
+    const ng=ctx.createRadialGradient(nx-8,ny-8,4,nx,ny,STICK.nub); ng.addColorStop(0,active?'#6fb8a2':'#4a5f80'); ng.addColorStop(1,active?'#2f7a64':'#1f2a40');
+    ctx.globalAlpha=active?0.95:0.8; ctx.fillStyle=ng; ctx.beginPath(); ctx.arc(nx,ny,STICK.nub,0,TAU); ctx.fill();
+    ctx.globalAlpha=1; ctx.strokeStyle=PAL.chalk; ctx.lineWidth=2; ctx.beginPath(); ctx.arc(nx,ny,STICK.nub,0,TAU); ctx.stroke();
+    ctx.lineWidth=1;
   }
-  // action buttons
+  // action buttons with icons
   for(const b of touchButtons){
     const held=[...touch.holds.values()].includes(b.k)||(b.k==='tension'&&touch.tension)||(b.k==='sneak'&&player&&player.sneak);
-    ctx.globalAlpha=held?0.5:0.24; ctx.fillStyle=held?PAL.verd:PAL.draft; ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,TAU); ctx.fill();
-    ctx.globalAlpha=held?0.95:0.65; ctx.strokeStyle=PAL.chalk; ctx.lineWidth=2.5; ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,TAU); ctx.stroke();
-    ctx.fillStyle=PAL.chalk; ctx.font=(b.big?'bold 18px':'bold 13px')+' monospace'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(b.label,b.x,b.y);
-    ctx.globalAlpha=1; ctx.lineWidth=1; }
+    const col = b.k==='sneak'?PAL.verd : b.k==='escape'?PAL.oxide : b.k==='tension'?PAL.verd : PAL.sodium;
+    const g=ctx.createRadialGradient(b.x,b.y,b.r*0.2,b.x,b.y,b.r); g.addColorStop(0,held?'rgba(78,156,134,0.55)':'rgba(46,66,96,0.16)'); g.addColorStop(1,held?'rgba(78,156,134,0.35)':'rgba(46,66,96,0.32)');
+    ctx.fillStyle=g; ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,TAU); ctx.fill();
+    ctx.globalAlpha=held?1:0.7; ctx.strokeStyle=held?PAL.chalk:col; ctx.lineWidth=2.5; ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,TAU); ctx.stroke(); ctx.globalAlpha=1;
+    ctx.fillStyle=PAL.chalk; ctx.textAlign='center'; ctx.textBaseline='middle';
+    if(b.k==='e'){ // hand icon
+      ctx.strokeStyle=PAL.chalk; ctx.lineWidth=2.4; ctx.lineCap='round'; ctx.beginPath(); for(let f=0;f<4;f++){ ctx.moveTo(b.x-9+f*6,b.y-2); ctx.lineTo(b.x-9+f*6,b.y-14+Math.abs(f-1.5)*3); } ctx.stroke();
+      ctx.fillStyle='rgba(191,203,217,0.85)'; roundRect(b.x-12,b.y-4,24,16,5); ctx.fill(); ctx.lineCap='butt';
+      ctx.fillStyle=PAL.chalk; ctx.font='bold 11px monospace'; ctx.fillText(b.label,b.x,b.y+30); }
+    else if(b.k==='sneak'){ // crouching figure
+      ctx.fillStyle=PAL.chalk; ctx.beginPath(); ctx.arc(b.x-2,b.y-12,4,0,TAU); ctx.fill(); ctx.strokeStyle=PAL.chalk; ctx.lineWidth=3; ctx.lineCap='round';
+      ctx.beginPath(); ctx.moveTo(b.x-2,b.y-8); ctx.lineTo(b.x+3,b.y-1); ctx.lineTo(b.x-4,b.y+4); ctx.moveTo(b.x+3,b.y-1); ctx.lineTo(b.x+8,b.y+5); ctx.stroke(); ctx.lineCap='butt';
+      ctx.font='bold 11px monospace'; ctx.fillText(b.label,b.x,b.y+26); }
+    else if(b.k==='tension'){ // wrench-like tension bar
+      ctx.strokeStyle=PAL.chalk; ctx.lineWidth=4; ctx.lineCap='round'; ctx.beginPath(); ctx.moveTo(b.x-14,b.y+6); ctx.lineTo(b.x+6,b.y-10); ctx.stroke(); ctx.beginPath(); ctx.moveTo(b.x+6,b.y-10); ctx.lineTo(b.x+14,b.y-4); ctx.stroke(); ctx.lineCap='butt';
+      ctx.font='bold 12px monospace'; ctx.fillText(b.label,b.x,b.y+30); }
+    else { ctx.font='bold 13px monospace'; ctx.fillText(b.label,b.x,b.y); }
+    ctx.lineWidth=1; }
   ctx.textBaseline='alphabetic'; ctx.textAlign='left';
 }
 
@@ -2385,6 +2432,13 @@ function drawTitleHouse(cx,cy){
 // ============================================================
 let demo=null;
 function playing(){ return mode==='play' || mode==='demo'; }
+let pausedFrom=null;
+function pauseGame(){ if(mode==='play'){ pausedFrom='play'; mode='paused'; clearAllInput(); } }
+function resumeGame(){ if(mode==='paused'){ mode=pausedFrom||'play'; pausedFrom=null; } }
+function clearAllInput(){ for(const k in keys) keys[k]=false; touch.stickId=null; touch.vec=[0,0]; touch.nub=[STICK.x,STICK.y]; touch.tension=false; touch.pickId=null; touch.holds.clear(); }
+function drawPaused(){ uiTf(); const gh=CH-HUD_H; ctx.fillStyle='rgba(6,8,12,0.72)'; ctx.fillRect(0,0,CW,CH);
+  ctx.textAlign='center'; ctx.textBaseline='alphabetic'; ctx.fillStyle=PAL.chalk; ctx.font='bold 34px monospace'; ctx.fillText('PAUSED', CW/2, gh/2-6);
+  ctx.fillStyle=PAL.draft; ctx.font='13px monospace'; ctx.fillText(touch.used?'tap to keep going':'press P or any key to keep going', CW/2, gh/2+24); ctx.textAlign='left'; }
 function startDemo(lv){
   level=lv; introLevel=-1; resetRun(); mode='demo';
   demo={ lv, steps:buildDemo(lv), i:0, cap:'', capT:0, retryT:0, doneT:0, msg:'' };
@@ -2528,6 +2582,8 @@ function drawEnd(escaped){
     ctx.fillStyle=`rgba(255,224,160,${0.85+0.15*Math.sin(gameT*10)})`; ctx.beginPath(); ctx.arc(lx,ly+2,5,0,TAU); ctx.fill(); ctx.lineWidth=1;
     ctx.fillStyle=PAL.oxide; ctx.font='bold 40px monospace'; ctx.fillText('CAUGHT!',CW/2,210);
     ctx.fillStyle=PAL.chalk; ctx.font='14px monospace'; ctx.fillText(stats.cause||'The watchman walks you home. Better luck next night!',CW/2,248);
+    { const tips=['Sneak at a bookcase, cabinet, barrel, crate, clock, curtain or coat rack to vanish.','Guards only see forward. Behind them is safe.','Footsteps carry two tiles \u2014 creep when you follow someone.','Never pick a lock in a guard\u2019s line of sight.','Running is fast but loud \u2014 break sight first, then hide.','Watch the gauges: SHADOW and QUIET means you\u2019re safe.'];
+      ctx.fillStyle=PAL.verd; ctx.font='12px monospace'; ctx.fillText('TIP  \u00b7  '+tips[(prog.xp+stats.picked+((endT*0.0)|0)+(level*3))%tips.length],CW/2,320); }
     ctx.fillStyle=PAL.draft; ctx.font='13px monospace'; ctx.fillText(touch.used?'tap to run the job again':'press R to run the job again',CW/2,290); return; }
   const p=stats.payout||{rows:[['take',`${player.lootVal} coin`]],xp:0};
   { const cx=CW/2, cy=70; for(let c=0;c<7;c++){ const ox=(c%3-1)*14, oy=-((c/3)|0)*7; ctx.fillStyle=shade(PAL.sodium,0.7+0.05*c); ctx.beginPath(); ctx.ellipse(cx+ox,cy+oy,9,3.5,0,0,TAU); ctx.fill(); ctx.strokeStyle='rgba(0,0,0,0.45)'; ctx.stroke(); }
@@ -2543,6 +2599,10 @@ function drawEnd(escaped){
   ctx.textAlign='center'; ctx.fillStyle=PAL.sodium; ctx.font='bold 22px monospace'; if(xpT>0) ctx.fillText(`+${shown} XP`,CW/2,y+16);
   ctx.fillStyle=PAL.draft; ctx.font='12px monospace';
   ctx.fillText(`purse ${prog.xp} XP  \u00b7  best haul ${prog.best} coin  \u00b7  locks picked ${stats.picked}`,CW/2,y+42);
+  { const mult=p.rows.filter(r=>r[1][0]==='\u00d7').length; const grade=mult>=3?'S':mult===2?'A':mult===1?'B':'C';
+    const st=clamp((endT-0.6-p.rows.length*0.35-1.2)/0.3,0,1); if(st>0){ const sc=1+(1-st)*1.4; ctx.save(); ctx.translate(CW-250,200); ctx.rotate(-0.22); ctx.scale(sc,sc); ctx.globalAlpha=st;
+      ctx.strokeStyle=PAL.oxide; ctx.lineWidth=4; ctx.strokeRect(-34,-34,68,68); ctx.fillStyle=PAL.oxide; ctx.font='bold 46px monospace'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(grade,0,2);
+      ctx.font='bold 9px monospace'; ctx.fillText('NIGHT GRADE',0,-24); ctx.restore(); ctx.textBaseline='alphabetic'; ctx.textAlign='center'; } }
   if(stats.campaignDone){ ctx.fillStyle=PAL.sodium; ctx.font='13px monospace';
     ctx.fillText('You\u2019ve cleared every job for now \u2014 the fence has bigger work coming.',CW/2,y+66);
     ctx.fillStyle=PAL.draft; ctx.fillText(touch.used?'tap to start over':'press R to start over',CW/2,y+90); }
@@ -2582,6 +2642,7 @@ function boot(){
   if(typeof window!=='undefined' && window.addEventListener){
     window.addEventListener('resize', clearInput);
     window.addEventListener('orientationchange', clearInput);
+  document.addEventListener('visibilitychange', ()=>{ if(document.hidden) pauseGame(); });
   }
   if(typeof screen!=='undefined' && screen.orientation && screen.orientation.addEventListener)
     screen.orientation.addEventListener('change', clearInput);
